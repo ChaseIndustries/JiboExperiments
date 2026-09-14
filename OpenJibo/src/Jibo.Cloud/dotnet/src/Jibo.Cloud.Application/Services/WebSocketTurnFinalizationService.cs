@@ -40,12 +40,16 @@ public sealed class WebSocketTurnFinalizationService(
     private const string GlsmPhaseMetadataKey = "glsmPhase";
     private const int AutoFinalizeContinuationDeferralMaxAttempts = 4;
     private static readonly TimeSpan AutoFinalizeReconnectGrace = TimeSpan.FromSeconds(4);
-    private static readonly TimeSpan AutoFinalizeMinTurnAge = TimeSpan.FromMilliseconds(250);
-    private static readonly TimeSpan AutoFinalizeSilenceWindow = TimeSpan.FromMilliseconds(300);
-    private static readonly TimeSpan AutoFinalizeHotphraseOggSilenceWindow = TimeSpan.FromMilliseconds(300);
-    private static readonly TimeSpan AutoFinalizeHotphraseOggEarlyProbeMinTurnAge = TimeSpan.FromMilliseconds(250);
-    private static readonly TimeSpan AutoFinalizeHotphraseOggEarlyProbeGap = TimeSpan.FromMilliseconds(300);
-    private static readonly TimeSpan AutoFinalizeEarlyProbeRetryInterval = TimeSpan.FromMilliseconds(100);
+    // Fast path when Opus content-silence (VAD) confirms end-of-speech.
+    private static readonly TimeSpan AutoFinalizeMinTurnAge = TimeSpan.FromMilliseconds(400);
+    private static readonly TimeSpan AutoFinalizeSilenceWindow = TimeSpan.FromMilliseconds(450);
+    private static readonly TimeSpan AutoFinalizeHotphraseOggSilenceWindow = TimeSpan.FromMilliseconds(700);
+    // Arrival-gap early probe must stay conservative: robots batch OGG frames with
+    // multi-hundred-ms gaps mid-utterance. Cutting at 250/300ms truncated commands
+    // like "what's your favorite color" into incomplete STT + retry storms (~3s).
+    private static readonly TimeSpan AutoFinalizeHotphraseOggEarlyProbeMinTurnAge = TimeSpan.FromMilliseconds(900);
+    private static readonly TimeSpan AutoFinalizeHotphraseOggEarlyProbeGap = TimeSpan.FromMilliseconds(1000);
+    private static readonly TimeSpan AutoFinalizeEarlyProbeRetryInterval = TimeSpan.FromMilliseconds(400);
 
     private static readonly TimeSpan
         AutoFinalizeHotphraseOggContinuousProbeMinTurnAge = TimeSpan.FromMilliseconds(1800);
@@ -1050,6 +1054,7 @@ public sealed class WebSocketTurnFinalizationService(
         session.TurnState.FirstAudioReceivedUtc = null;
         session.TurnState.LastAudioReceivedUtc = null;
         session.TurnState.LastAutoFinalizeAttemptUtc = null;
+        session.TurnState.DeferredIncompleteAudioBytes = 0;
         session.TurnState.BufferedAudioFrames.Clear();
         session.TurnState.FinalizeAttemptCount = 0;
         session.TurnState.AutoFinalizeBlockedUntilUtc = null;
@@ -1082,6 +1087,7 @@ public sealed class WebSocketTurnFinalizationService(
         turnState.FirstAudioReceivedUtc = null;
         turnState.LastAudioReceivedUtc = null;
         turnState.LastAutoFinalizeAttemptUtc = null;
+        turnState.DeferredIncompleteAudioBytes = 0;
         turnState.ListenSosTimeout = null;
         turnState.ListenMaxSpeechTimeout = null;
         turnState.BufferedAudioChunkCount = 0;
@@ -1578,11 +1584,22 @@ public sealed class WebSocketTurnFinalizationService(
                 return noInputReplies;
             }
 
+            finalizedTurn = CompleteIncompleteLaunchTranscriptIfClosing(
+                finalizedTurn,
+                turnState,
+                messageType,
+                allowFallbackOnMissingTranscript);
+
             if (ShouldDeferForIncompleteHotphraseLaunchCommand(finalizedTurn, turnState, messageType,
                     allowFallbackOnMissingTranscript, out var incompleteCommandReason))
             {
                 turnState.AwaitingTurnCompletion = true;
                 turnState.FinalizeAttemptCount += 1;
+                // Block STT retry storms until more audio arrives. Early probes at
+                // 100–400ms were re-transcribing the same truncated buffer and either
+                // burned ~3s or eventually finalized incomplete text into the wrong skill.
+                turnState.DeferredIncompleteAudioBytes = turnState.BufferedAudioBytes;
+                turnState.LastAutoFinalizeAttemptUtc = DateTimeOffset.UtcNow;
                 var turnAge = turnState.FirstAudioReceivedUtc.HasValue
                     ? DateTimeOffset.UtcNow - turnState.FirstAudioReceivedUtc.Value
                     : TimeSpan.Zero;
@@ -1595,7 +1612,8 @@ public sealed class WebSocketTurnFinalizationService(
                         ["finalizeAttemptCount"] = turnState.FinalizeAttemptCount,
                         ["turnAgeMs"] = (int)turnAge.TotalMilliseconds,
                         ["bufferedAudioBytes"] = turnState.BufferedAudioBytes,
-                        ["bufferedAudioChunks"] = turnState.BufferedAudioChunkCount
+                        ["bufferedAudioChunks"] = turnState.BufferedAudioChunkCount,
+                        ["deferredIncompleteAudioBytes"] = turnState.DeferredIncompleteAudioBytes
                     }), cancellationToken);
                 return [];
             }
@@ -2027,6 +2045,15 @@ public sealed class WebSocketTurnFinalizationService(
         var reachedContentSilence = HasContentSilence(turnState, silenceWindow);
         var transcriptHintEarlyFinalize = ShouldEarlyFinalizeFromTranscriptHint(turnState);
 
+        // Incomplete-command deferrals must not re-enter finalize on arrival-time
+        // silence alone — that re-ran STT on the same truncated buffer every ~450ms.
+        if (turnState.DeferredIncompleteAudioBytes > 0 &&
+            turnState.BufferedAudioBytes <= turnState.DeferredIncompleteAudioBytes &&
+            !receivedEndOfStream &&
+            !reachedHardTimeout &&
+            !reachedContentSilence)
+            return false;
+
         return turnState is
                {
                    AwaitingTurnCompletion: true, SawListen: true,
@@ -2082,7 +2109,7 @@ public sealed class WebSocketTurnFinalizationService(
         {
             // Native robots keep streaming OGG while the mic is open, so a silence
             // gap never appears in arrival time. Prefer Opus content-silence (VAD)
-            // and keep the 1.8s continuous probe only as a safety net.
+            // and keep the continuous probe only as a safety net.
             if (HasReceivedOggEndOfStream(turnState))
                 return hotphraseOggProbeReady;
 
@@ -2142,6 +2169,10 @@ public sealed class WebSocketTurnFinalizationService(
 
     private static bool CanRetryEarlyAutoFinalizeProbe(WebSocketTurnState turnState)
     {
+        if (turnState.DeferredIncompleteAudioBytes > 0 &&
+            turnState.BufferedAudioBytes <= turnState.DeferredIncompleteAudioBytes)
+            return false;
+
         return !turnState.LastAutoFinalizeAttemptUtc.HasValue ||
                DateTimeOffset.UtcNow - turnState.LastAutoFinalizeAttemptUtc.Value >=
                AutoFinalizeEarlyProbeRetryInterval;
@@ -3306,7 +3337,11 @@ public sealed class WebSocketTurnFinalizationService(
         if (!IsHotphraseLaunchTurn(turn) || !turnState.FirstAudioReceivedUtc.HasValue) return false;
 
         var turnAge = DateTimeOffset.UtcNow - turnState.FirstAudioReceivedUtc.Value;
-        if (turnAge >= ResolveHardBufferedAudioAge(turnState)) return false;
+        var hardAge = ResolveHardBufferedAudioAge(turnState);
+        var forceCloseIncomplete =
+            turnAge >= hardAge ||
+            HasReceivedOggEndOfStream(turnState) ||
+            HasContentSilence(turnState, AutoFinalizeHotphraseOggSilenceWindow);
 
         var normalized = NormalizeUsableTranscript(turn.NormalizedTranscript ?? turn.RawTranscript);
         if (string.IsNullOrWhiteSpace(normalized)) return false;
@@ -3316,12 +3351,15 @@ public sealed class WebSocketTurnFinalizationService(
 
         if (LooksLikeCloudVersionSelfAudioOnly(normalized))
         {
+            if (forceCloseIncomplete) return false;
             reason = "cloud_version_self_audio";
             return true;
         }
 
         if (LooksLikeIncompleteLaunchQuestion(normalized))
         {
+            if (forceCloseIncomplete) return false;
+
             reason = "launch_question_incomplete";
             return true;
         }
@@ -3329,8 +3367,83 @@ public sealed class WebSocketTurnFinalizationService(
         if (normalized is not ("what time" or "what time is" or "what time is it in" or "what time is it at"))
             return false;
 
+        if (forceCloseIncomplete) return false;
+
         reason = "clock_command_incomplete";
         return true;
+    }
+
+    private static TurnContext CompleteIncompleteLaunchTranscriptIfClosing(
+        TurnContext turn,
+        WebSocketTurnState turnState,
+        string messageType,
+        bool allowFallbackOnMissingTranscript)
+    {
+        if (!allowFallbackOnMissingTranscript ||
+            !string.Equals(messageType, "AUTO_FINALIZE", StringComparison.OrdinalIgnoreCase) ||
+            !IsHotphraseLaunchTurn(turn) ||
+            !turnState.FirstAudioReceivedUtc.HasValue)
+            return turn;
+
+        var turnAge = DateTimeOffset.UtcNow - turnState.FirstAudioReceivedUtc.Value;
+        var forceCloseIncomplete =
+            turnAge >= ResolveHardBufferedAudioAge(turnState) ||
+            HasReceivedOggEndOfStream(turnState) ||
+            HasContentSilence(turnState, AutoFinalizeHotphraseOggSilenceWindow);
+        if (!forceCloseIncomplete) return turn;
+
+        var normalized = NormalizeUsableTranscript(turn.NormalizedTranscript ?? turn.RawTranscript);
+        if (string.IsNullOrWhiteSpace(normalized)) return turn;
+        var commandTranscript = TranscriptTextNormalizer.ExtractWakePhraseCommand(normalized);
+        if (!string.IsNullOrWhiteSpace(commandTranscript))
+            normalized = NormalizeUsableTranscript(commandTranscript);
+
+        if (!LooksLikeIncompleteLaunchQuestion(normalized) ||
+            !TryCompleteIncompleteLaunchQuestion(normalized, out var completed))
+            return turn;
+
+        return CloneTurnWithTranscript(turn, completed);
+    }
+
+    private static TurnContext CloneTurnWithTranscript(TurnContext turn, string transcript) =>
+        new()
+        {
+            TurnId = turn.TurnId,
+            SessionId = turn.SessionId,
+            TimestampUtc = turn.TimestampUtc,
+            InputMode = turn.InputMode,
+            SourceKind = turn.SourceKind,
+            WakePhrase = turn.WakePhrase,
+            RawTranscript = transcript,
+            NormalizedTranscript = transcript,
+            DeviceId = turn.DeviceId,
+            HostName = turn.HostName,
+            RequestId = turn.RequestId,
+            ProtocolService = turn.ProtocolService,
+            ProtocolOperation = turn.ProtocolOperation,
+            FirmwareVersion = turn.FirmwareVersion,
+            ApplicationVersion = turn.ApplicationVersion,
+            Locale = turn.Locale,
+            TimeZone = turn.TimeZone,
+            IsFollowUpEligible = turn.IsFollowUpEligible,
+            Attributes = turn.Attributes
+        };
+
+    private static bool TryCompleteIncompleteLaunchQuestion(string normalized, out string completed)
+    {
+        completed = normalized switch
+        {
+            "how old" or "how old are" or "how old r" or "how old are yo" or "how old r yo" => "how old are you",
+            "what is your ag" or "what's your ag" or "what s your ag" or "whats your ag" => "what is your age",
+            "what's your favor" or "whats your favor" or "what is your favor" or
+                "what's your favour" or "whats your favour" or "what is your favour" or
+                "what's your favorite" or "whats your favorite" or "what s your favorite" or
+                "what is your favorite" or "what's your favourite" or "whats your favourite" or
+                "what s your favourite" or "what is your favourite" => "what's your favorite color",
+            _ => string.Empty
+        };
+
+        return !string.IsNullOrWhiteSpace(completed);
     }
 
     private static bool ShouldHandleUnexpectedYesNoAutoFinalizeTranscript(
@@ -3478,8 +3591,11 @@ public sealed class WebSocketTurnFinalizationService(
             "what's your favorite" or "whats your favorite" or "what s your favorite" or
             "what is your favorite" or "what's your favourite" or "whats your favourite" or
             "what s your favourite" or "what is your favourite" or
+            "what's your favor" or "whats your favor" or "what is your favor" or
+            "what's your favour" or "whats your favour" or "what is your favour" or
             "how old" or "how old are" or "how old r" or
-            "what is your age" or "what's your age" or "what s your age" or "whats your age";
+            "how old are yo" or "how old r yo" or
+            "what is your ag" or "what's your ag" or "what s your ag" or "whats your ag";
     }
 
     private static bool IsHotphraseOnlyTranscript(string normalized)
