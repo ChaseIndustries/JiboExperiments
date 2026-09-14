@@ -33,25 +33,44 @@ public sealed class LocalWhisperCppBufferedAudioSttStrategyTests
     [Fact]
     public void CanHandle_ReturnsFalse_WhenConfiguredAbsoluteWhisperPathIsMissing()
     {
-        var strategy = new LocalWhisperCppBufferedAudioSttStrategy(
-            new BufferedAudioSttOptions
-            {
-                EnableLocalWhisperCpp = true,
-                FfmpegPath = "/usr/bin/ffmpeg",
-                WhisperCliPath = "/path/that/does/not/exist/whisper-cli",
-                WhisperModelPath = "/path/that/does/not/exist/model.bin"
-            },
-            new FakeExternalProcessRunner());
-
-        var turn = new TurnContext
+        var previousCli = Environment.GetEnvironmentVariable("OPENJIBO_STT_WHISPER_CLI_PATH");
+        var previousCliAlias = Environment.GetEnvironmentVariable("WHISPER_CLI_PATH");
+        var previousModel = Environment.GetEnvironmentVariable("OPENJIBO_STT_WHISPER_MODEL_PATH");
+        var previousModelAlias = Environment.GetEnvironmentVariable("WHISPER_MODEL_PATH");
+        try
         {
-            Attributes = new Dictionary<string, object?>
-            {
-                ["bufferedAudioFrames"] = new[] { BuildMinimalOggPage(), BuildAudioBearingPage() }
-            }
-        };
+            Environment.SetEnvironmentVariable("OPENJIBO_STT_WHISPER_CLI_PATH", null);
+            Environment.SetEnvironmentVariable("WHISPER_CLI_PATH", null);
+            Environment.SetEnvironmentVariable("OPENJIBO_STT_WHISPER_MODEL_PATH", null);
+            Environment.SetEnvironmentVariable("WHISPER_MODEL_PATH", null);
 
-        Assert.False(strategy.CanHandle(turn));
+            var strategy = new LocalWhisperCppBufferedAudioSttStrategy(
+                new BufferedAudioSttOptions
+                {
+                    EnableLocalWhisperCpp = true,
+                    FfmpegPath = "/usr/bin/ffmpeg",
+                    WhisperCliPath = "/path/that/does/not/exist/whisper-cli",
+                    WhisperModelPath = "/path/that/does/not/exist/model.bin"
+                },
+                new FakeExternalProcessRunner());
+
+            var turn = new TurnContext
+            {
+                Attributes = new Dictionary<string, object?>
+                {
+                    ["bufferedAudioFrames"] = new[] { BuildMinimalOggPage(), BuildAudioBearingPage() }
+                }
+            };
+
+            Assert.False(strategy.CanHandle(turn));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("OPENJIBO_STT_WHISPER_CLI_PATH", previousCli);
+            Environment.SetEnvironmentVariable("WHISPER_CLI_PATH", previousCliAlias);
+            Environment.SetEnvironmentVariable("OPENJIBO_STT_WHISPER_MODEL_PATH", previousModel);
+            Environment.SetEnvironmentVariable("WHISPER_MODEL_PATH", previousModelAlias);
+        }
     }
 
     [Fact]
@@ -308,6 +327,15 @@ public sealed class LocalWhisperCppBufferedAudioSttStrategyTests
                 argument => argument.Contains("silenceremove", StringComparison.OrdinalIgnoreCase) &&
                             argument.Contains("volume=8dB", StringComparison.OrdinalIgnoreCase));
             Assert.Equal("whisper-cli", runner.Calls[1].FileName);
+            Assert.Contains("-m", runner.Calls[1].Arguments);
+            Assert.Contains("model.bin", runner.Calls[1].Arguments);
+            Assert.Contains("-f", runner.Calls[1].Arguments);
+            Assert.Contains("--audio-ctx", runner.Calls[1].Arguments);
+            Assert.Contains("512", runner.Calls[1].Arguments);
+            Assert.Contains("-bs", runner.Calls[1].Arguments);
+            Assert.Contains("1", runner.Calls[1].Arguments);
+            Assert.Contains("-nt", runner.Calls[1].Arguments);
+            Assert.Contains("-t", runner.Calls[1].Arguments);
             Assert.Equal(147, result.Metadata["bufferedAudioBytes"]);
             Assert.Equal(
                 "silenceremove=start_periods=1:start_duration=0.03:start_threshold=-45dB:stop_periods=-1:stop_duration=0.5:stop_threshold=-45dB,volume=8dB",
@@ -790,6 +818,32 @@ public sealed class LocalWhisperCppBufferedAudioSttStrategyTests
         Assert.Contains("OpenJibo:Stt:FfmpegPath", ex.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("OpenJibo:Stt:WhisperCliPath", ex.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("OpenJibo:Stt:WhisperModelPath", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ValidateResolvedDependencies_ThrowsWhenWhisperBinaryIsNotWhisperCpp()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            BufferedAudioSttPathResolver.ValidateResolvedDependencies(
+                new BufferedAudioSttOptions
+                {
+                    EnableLocalWhisperCpp = true,
+                    FfmpegPath = "/tools/ffmpeg",
+                    WhisperCliPath = "/tools/python-whisper",
+                    WhisperModelPath = "/tools/ggml-base.en.bin"
+                },
+                _ => null,
+                path => path is "/tools/ffmpeg" or "/tools/python-whisper" or "/tools/ggml-base.en.bin",
+                null,
+                OperatingSystemPlatform.Linux,
+                _ => new BufferedAudioSttPathResolver.WhisperCppProbeResult(
+                    false,
+                    "Help text looks like OpenAI Python whisper, not whisper.cpp.")));
+
+        Assert.Contains("buffered-audio STT", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("OpenJibo:Stt:WhisperCliPath", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("whisper.cpp", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Python", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

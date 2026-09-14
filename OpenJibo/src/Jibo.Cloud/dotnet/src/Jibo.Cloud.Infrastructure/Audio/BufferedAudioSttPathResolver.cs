@@ -29,6 +29,8 @@ public static class BufferedAudioSttPathResolver
         {
             EnableLocalWhisperCpp = source.EnableLocalWhisperCpp,
             EnableAzureSpeech = source.EnableAzureSpeech,
+            EnableWhisperServer = source.EnableWhisperServer ||
+                                 IsTruthy(getEnvironmentVariable("OPENJIBO_STT_ENABLE_WHISPER_SERVER")),
             FfmpegPath = ResolveExecutable(
                 source.FfmpegPath,
                 ["OPENJIBO_STT_FFMPEG_PATH", "FFMPEG_PATH"],
@@ -53,11 +55,30 @@ public static class BufferedAudioSttPathResolver
                 homeDirectory,
                 getEnvironmentVariable,
                 fileExists),
+            WhisperServerUrl = ResolveOptionalString(
+                source.WhisperServerUrl,
+                ["OPENJIBO_STT_WHISPER_SERVER_URL", "WHISPER_SERVER_URL"],
+                getEnvironmentVariable) ?? "http://127.0.0.1:8080",
             AzureSpeechRegion = source.AzureSpeechRegion,
             AzureSpeechSubscriptionKey = source.AzureSpeechSubscriptionKey,
             AzureSpeechEndpoint = source.AzureSpeechEndpoint,
             AzureSpeechRequestTimeout = source.AzureSpeechRequestTimeout,
             WhisperLanguage = source.WhisperLanguage,
+            WhisperAudioContext = ResolvePositiveInt(
+                source.WhisperAudioContext,
+                ["OPENJIBO_STT_WHISPER_AUDIO_CTX", "WHISPER_AUDIO_CTX"],
+                getEnvironmentVariable,
+                512),
+            WhisperThreads = ResolveNonNegativeInt(
+                source.WhisperThreads,
+                ["OPENJIBO_STT_WHISPER_THREADS", "WHISPER_THREADS"],
+                getEnvironmentVariable,
+                0),
+            WhisperBeamSize = ResolvePositiveInt(
+                source.WhisperBeamSize,
+                ["OPENJIBO_STT_WHISPER_BEAM_SIZE", "WHISPER_BEAM_SIZE"],
+                getEnvironmentVariable,
+                1),
             TempDirectory = source.TempDirectory,
             CleanupTempFiles = source.CleanupTempFiles
         };
@@ -138,12 +159,31 @@ public static class BufferedAudioSttPathResolver
         string? homeDirectory,
         OperatingSystemPlatform platform)
     {
+        ValidateResolvedDependencies(
+            source,
+            getEnvironmentVariable,
+            fileExists,
+            homeDirectory,
+            platform,
+            ProbeWhisperCppBinary);
+    }
+
+    public static void ValidateResolvedDependencies(
+        BufferedAudioSttOptions source,
+        Func<string, string?> getEnvironmentVariable,
+        Func<string, bool> fileExists,
+        string? homeDirectory,
+        OperatingSystemPlatform platform,
+        Func<string, WhisperCppProbeResult> probeWhisperCpp)
+    {
         var resolved = Resolve(source, getEnvironmentVariable, fileExists, homeDirectory, platform);
-        if (!resolved.EnableLocalWhisperCpp && !resolved.EnableAzureSpeech) return;
+        if (!resolved.EnableLocalWhisperCpp && !resolved.EnableAzureSpeech && !resolved.EnableWhisperServer)
+            return;
 
         var issues = new List<string>();
 
-        if (!IsExecutableAvailable(resolved.FfmpegPath, getEnvironmentVariable, fileExists, platform))
+        if ((resolved.EnableLocalWhisperCpp || resolved.EnableAzureSpeech || resolved.EnableWhisperServer) &&
+            !IsExecutableAvailable(resolved.FfmpegPath, getEnvironmentVariable, fileExists, platform))
             issues.Add(DescribeExecutableIssue("ffmpeg", resolved.FfmpegPath, "OpenJibo:Stt:FfmpegPath"));
 
         if (resolved.EnableLocalWhisperCpp)
@@ -151,6 +191,15 @@ public static class BufferedAudioSttPathResolver
             if (!IsExecutableAvailable(resolved.WhisperCliPath, getEnvironmentVariable, fileExists, platform))
                 issues.Add(DescribeExecutableIssue("whisper-cli", resolved.WhisperCliPath,
                     "OpenJibo:Stt:WhisperCliPath"));
+            else
+            {
+                var probe = probeWhisperCpp(resolved.WhisperCliPath!);
+                if (!probe.IsWhisperCpp)
+                    issues.Add(
+                        $"OpenJibo:Stt:WhisperCliPath points to '{resolved.WhisperCliPath}', but that binary is not whisper.cpp " +
+                        $"(expected help text containing '--audio-ctx'). {probe.Detail} " +
+                        "OpenAI's Python `whisper` package is incompatible — point this at whisper-cli from whisper.cpp.");
+            }
 
             if (!IsFileAvailable(resolved.WhisperModelPath, fileExists))
                 issues.Add(DescribeFileIssue(resolved.WhisperModelPath, "OpenJibo:Stt:WhisperModelPath"));
@@ -164,6 +213,52 @@ public static class BufferedAudioSttPathResolver
             "for example via sudo. " +
             string.Join(" ", issues) +
             " Fix the configured paths or disable OpenJibo:Stt:EnableLocalWhisperCpp.");
+    }
+
+    public readonly record struct WhisperCppProbeResult(bool IsWhisperCpp, string Detail);
+
+    public static WhisperCppProbeResult ProbeWhisperCppBinary(string fileName)
+    {
+        try
+        {
+            using var process = new System.Diagnostics.Process();
+            process.StartInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = fileName,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            process.StartInfo.ArgumentList.Add("-h");
+            process.Start();
+            var stdOutTask = process.StandardOutput.ReadToEndAsync();
+            var stdErrTask = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(8_000))
+            {
+                try { process.Kill(entireProcessTree: true); } catch { /* best-effort */ }
+                return new WhisperCppProbeResult(false, "Timed out waiting for -h output.");
+            }
+
+            var combined = (stdOutTask.GetAwaiter().GetResult() + "\n" + stdErrTask.GetAwaiter().GetResult())
+                .ToLowerInvariant();
+            if (combined.Contains("--audio-ctx", StringComparison.Ordinal) ||
+                combined.Contains("-ac n", StringComparison.Ordinal) ||
+                combined.Contains("whisper.cpp", StringComparison.Ordinal))
+                return new WhisperCppProbeResult(true, "Help text matches whisper.cpp.");
+
+            if (combined.Contains("--output_format", StringComparison.Ordinal) ||
+                combined.Contains("from whisper.transcribe", StringComparison.Ordinal) ||
+                combined.Contains("openai", StringComparison.Ordinal))
+                return new WhisperCppProbeResult(false,
+                    "Help text looks like OpenAI Python whisper, not whisper.cpp.");
+
+            return new WhisperCppProbeResult(false, "Help text did not include whisper.cpp markers.");
+        }
+        catch (Exception ex)
+        {
+            return new WhisperCppProbeResult(false, $"Failed to probe binary: {ex.Message}");
+        }
     }
 
     private static bool ShouldDiscover(string? configured, string legacyLinuxDefault)
@@ -228,7 +323,8 @@ public static class BufferedAudioSttPathResolver
             case OperatingSystemPlatform.Linux:
                 candidates.AddRange([
                     LegacyLinuxWhisperCliPath,
-                    "/usr/local/bin/whisper-cli"
+                    "/usr/local/bin/whisper-cli",
+                    "/usr/bin/whisper.cpp/build/bin/whisper-cli"
                 ]);
                 break;
         }
@@ -238,7 +334,9 @@ public static class BufferedAudioSttPathResolver
                 Path.Combine(homeDirectory, "whisper.cpp", "build", "bin", "whisper-cli"),
                 Path.Combine(homeDirectory, "whisper.cpp", "build", "bin", "Release", "whisper-cli.exe"),
                 Path.Combine(homeDirectory, "src", "whisper.cpp", "build", "bin", "whisper-cli"),
-                Path.Combine(homeDirectory, "Code", "whisper.cpp", "build", "bin", "whisper-cli")
+                Path.Combine(homeDirectory, "Code", "whisper.cpp", "build", "bin", "whisper-cli"),
+                Path.Combine(homeDirectory, "EZJiboServer", "whisper.cpp", "build", "bin", "whisper-cli"),
+                Path.Combine(homeDirectory, "EZOpenJibo", "whisper.cpp", "build", "bin", "whisper-cli")
             ]);
 
         candidates.Add("whisper-cli");
@@ -273,7 +371,8 @@ public static class BufferedAudioSttPathResolver
                 candidates.AddRange([
                     LegacyLinuxWhisperModelPath,
                     "/usr/local/share/whisper-cpp/models/ggml-base.en.bin",
-                    "/usr/local/share/whisper.cpp/models/ggml-base.en.bin"
+                    "/usr/local/share/whisper.cpp/models/ggml-base.en.bin",
+                    "/usr/bin/whisper.cpp/models/ggml-base.en.bin"
                 ]);
                 break;
         }
@@ -283,6 +382,9 @@ public static class BufferedAudioSttPathResolver
                 Path.Combine(homeDirectory, "whisper.cpp", "models", "ggml-base.en.bin"),
                 Path.Combine(homeDirectory, "src", "whisper.cpp", "models", "ggml-base.en.bin"),
                 Path.Combine(homeDirectory, "Code", "whisper.cpp", "models", "ggml-base.en.bin"),
+                Path.Combine(homeDirectory, "EZJiboServer", "whisper.cpp", "models", "ggml-base.en.bin"),
+                Path.Combine(homeDirectory, "EZOpenJibo", "whisper.cpp", "models", "ggml-base.en.bin"),
+                Path.Combine(homeDirectory, "ggml-base.en.bin"),
                 Path.Combine(homeDirectory, "Library", "Application Support", "openjibo", "whisper",
                     "ggml-base.en.bin")
             ]);
@@ -409,5 +511,56 @@ public static class BufferedAudioSttPathResolver
     private static bool ContainsDirectorySeparator(string path)
     {
         return path.Contains(Path.DirectorySeparatorChar) || path.Contains(Path.AltDirectorySeparatorChar);
+    }
+
+    private static bool IsTruthy(string? value)
+    {
+        return string.Equals(value, "1", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(value, "true", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(value, "yes", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(value, "on", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? ResolveOptionalString(
+        string? configured,
+        IReadOnlyList<string> environmentVariableNames,
+        Func<string, string?> getEnvironmentVariable)
+    {
+        if (!string.IsNullOrWhiteSpace(configured)) return configured.Trim();
+
+        return environmentVariableNames
+            .Select(getEnvironmentVariable)
+            .FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value))
+            ?.Trim();
+    }
+
+    private static int ResolvePositiveInt(
+        int configured,
+        IReadOnlyList<string> environmentVariableNames,
+        Func<string, string?> getEnvironmentVariable,
+        int fallback)
+    {
+        foreach (var name in environmentVariableNames)
+        {
+            var raw = getEnvironmentVariable(name);
+            if (int.TryParse(raw, out var parsed) && parsed > 0) return parsed;
+        }
+
+        return configured > 0 ? configured : fallback;
+    }
+
+    private static int ResolveNonNegativeInt(
+        int configured,
+        IReadOnlyList<string> environmentVariableNames,
+        Func<string, string?> getEnvironmentVariable,
+        int fallback)
+    {
+        foreach (var name in environmentVariableNames)
+        {
+            var raw = getEnvironmentVariable(name);
+            if (int.TryParse(raw, out var parsed) && parsed >= 0) return parsed;
+        }
+
+        return configured >= 0 ? configured : fallback;
     }
 }

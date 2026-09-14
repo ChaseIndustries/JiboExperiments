@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using Jibo.Cloud.Application.Abstractions;
+using Jibo.Cloud.Application.Audio;
 using Jibo.Cloud.Domain.Models;
 using Jibo.Runtime.Abstractions;
 using Microsoft.Extensions.Logging;
@@ -39,12 +40,12 @@ public sealed class WebSocketTurnFinalizationService(
     private const string GlsmPhaseMetadataKey = "glsmPhase";
     private const int AutoFinalizeContinuationDeferralMaxAttempts = 4;
     private static readonly TimeSpan AutoFinalizeReconnectGrace = TimeSpan.FromSeconds(4);
-    private static readonly TimeSpan AutoFinalizeMinTurnAge = TimeSpan.FromMilliseconds(750);
-    private static readonly TimeSpan AutoFinalizeSilenceWindow = TimeSpan.FromMilliseconds(450);
-    private static readonly TimeSpan AutoFinalizeHotphraseOggSilenceWindow = TimeSpan.FromMilliseconds(1200);
-    private static readonly TimeSpan AutoFinalizeHotphraseOggEarlyProbeMinTurnAge = TimeSpan.FromMilliseconds(900);
-    private static readonly TimeSpan AutoFinalizeHotphraseOggEarlyProbeGap = TimeSpan.FromMilliseconds(1200);
-    private static readonly TimeSpan AutoFinalizeEarlyProbeRetryInterval = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan AutoFinalizeMinTurnAge = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan AutoFinalizeSilenceWindow = TimeSpan.FromMilliseconds(300);
+    private static readonly TimeSpan AutoFinalizeHotphraseOggSilenceWindow = TimeSpan.FromMilliseconds(300);
+    private static readonly TimeSpan AutoFinalizeHotphraseOggEarlyProbeMinTurnAge = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan AutoFinalizeHotphraseOggEarlyProbeGap = TimeSpan.FromMilliseconds(300);
+    private static readonly TimeSpan AutoFinalizeEarlyProbeRetryInterval = TimeSpan.FromMilliseconds(100);
 
     private static readonly TimeSpan
         AutoFinalizeHotphraseOggContinuousProbeMinTurnAge = TimeSpan.FromMilliseconds(1800);
@@ -416,7 +417,7 @@ public sealed class WebSocketTurnFinalizationService(
                     turnState.BufferedAudioBytes,
                     turnState.BufferedAudioChunkCount,
                     pageCounts.AudioBearingPageCount);
-                return await FinalizeTurnAsync(session, envelope, "AUTO_FINALIZE", true, cancellationToken);
+                return await FinalizeOrScheduleAsync(session, envelope, "AUTO_FINALIZE", true, cancellationToken);
             }
 
             if (ShouldEarlyFinalizeBufferedAudio(session))
@@ -429,9 +430,11 @@ public sealed class WebSocketTurnFinalizationService(
                     turnState.BufferedAudioChunkCount,
                     pageCounts.AudioBearingPageCount);
                 turnState.LastAutoFinalizeAttemptUtc = DateTimeOffset.UtcNow;
-                return await FinalizeTurnAsync(session, envelope, "AUTO_FINALIZE", true, cancellationToken);
+                return await FinalizeOrScheduleAsync(session, envelope, "AUTO_FINALIZE", true, cancellationToken);
             }
 
+            // Update last-audio after the finalize decision so a frame that arrives
+            // after a silence gap can still close the turn (tests and idle path).
             if (hasAudioBearingPage)
                 turnState.LastAudioReceivedUtc = receivedAtUtc;
             logger.LogDebug(
@@ -524,7 +527,7 @@ public sealed class WebSocketTurnFinalizationService(
                     turnState.TransId,
                     turnState.BufferedAudioBytes,
                     turnState.BufferedAudioChunkCount);
-                return await FinalizeTurnAsync(session, envelope, "AUTO_FINALIZE", true, cancellationToken);
+                return await FinalizeOrScheduleAsync(session, envelope, "AUTO_FINALIZE", true, cancellationToken);
             }
 
             if (ShouldEarlyFinalizeBufferedAudio(session))
@@ -536,7 +539,7 @@ public sealed class WebSocketTurnFinalizationService(
                     turnState.BufferedAudioBytes,
                     turnState.BufferedAudioChunkCount);
                 turnState.LastAutoFinalizeAttemptUtc = DateTimeOffset.UtcNow;
-                return await FinalizeTurnAsync(session, envelope, "AUTO_FINALIZE", true, cancellationToken);
+                return await FinalizeOrScheduleAsync(session, envelope, "AUTO_FINALIZE", true, cancellationToken);
             }
 
             logger.LogDebug("Turn context exit without finalization session={SessionId} transId={TransId}",
@@ -771,7 +774,56 @@ public sealed class WebSocketTurnFinalizationService(
             turnState.TransId,
             turnState.BufferedAudioBytes,
             turnState.BufferedAudioChunkCount);
-        return await FinalizeTurnAsync(session, envelope, "AUTO_FINALIZE", true, cancellationToken);
+        return await FinalizeOrScheduleAsync(session, envelope, "AUTO_FINALIZE", true, cancellationToken);
+    }
+
+    private Task<IReadOnlyList<WebSocketReply>> FinalizeOrScheduleAsync(
+        CloudSession session,
+        WebSocketMessageEnvelope envelope,
+        string messageType,
+        bool allowFallbackOnMissingTranscript,
+        CancellationToken cancellationToken)
+    {
+        var sendAsync = AmbientTurnProgressPublisher.TryGetSendAsync();
+        if (sendAsync is null)
+            return FinalizeTurnAsync(session, envelope, messageType, allowFallbackOnMissingTranscript,
+                cancellationToken);
+
+        // Keep the websocket receive loop draining audio while STT/NLU runs.
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using (AmbientTurnProgressPublisher.Begin(sendAsync))
+                {
+                    var replies = await FinalizeTurnAsync(
+                        session,
+                        envelope,
+                        messageType,
+                        allowFallbackOnMissingTranscript,
+                        cancellationToken);
+                    foreach (var reply in replies)
+                        await sendAsync(reply, cancellationToken);
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                logger.LogDebug(
+                    "Background turn finalization canceled session={SessionId} transId={TransId}",
+                    session.SessionId,
+                    session.TurnState.TransId);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(
+                    ex,
+                    "Background turn finalization failed session={SessionId} transId={TransId}",
+                    session.SessionId,
+                    session.TurnState.TransId);
+            }
+        }, CancellationToken.None);
+
+        return Task.FromResult<IReadOnlyList<WebSocketReply>>([]);
     }
 
     private async Task<TurnContext> ResolveTranscriptAsync(TurnContext turn, CloudSession session,
@@ -1972,6 +2024,7 @@ public sealed class WebSocketTurnFinalizationService(
             : TimeSpan.Zero;
         var reachedSilenceWindow = turnState.LastAudioReceivedUtc.HasValue &&
                                    elapsedSinceLastAudio >= silenceWindow;
+        var reachedContentSilence = HasContentSilence(turnState, silenceWindow);
         var transcriptHintEarlyFinalize = ShouldEarlyFinalizeFromTranscriptHint(turnState);
 
         return turnState is
@@ -1984,7 +2037,8 @@ public sealed class WebSocketTurnFinalizationService(
                turnState.LastAudioReceivedUtc.HasValue &&
                (receivedEndOfStream || reachedHardTimeout ||
                 transcriptHintEarlyFinalize ||
-                reachedSilenceWindow) &&
+                reachedSilenceWindow ||
+                reachedContentSilence) &&
                turnAge >= AutoFinalizeMinTurnAge;
     }
 
@@ -2027,12 +2081,18 @@ public sealed class WebSocketTurnFinalizationService(
         if (!transcriptHintEarlyFinalize && elapsedSinceLastAudio < AutoFinalizeHotphraseOggEarlyProbeGap)
         {
             // Native robots keep streaming OGG while the mic is open, so a silence
-            // gap never appears. Do not use the 900ms early probe mid-utterance
-            // (that closed Hey Jibo at ~1s), but do allow the 1.8s continuous
-            // probe and an explicit OGG end-of-stream.
-            return HasReceivedOggEndOfStream(turnState)
-                ? hotphraseOggProbeReady
-                : ShouldContinuousProbeHotphraseOggAudio(turnState, pageCounts, turnAge);
+            // gap never appears in arrival time. Prefer Opus content-silence (VAD)
+            // and keep the 1.8s continuous probe only as a safety net.
+            if (HasReceivedOggEndOfStream(turnState))
+                return hotphraseOggProbeReady;
+
+            if (HasContentSilence(turnState, AutoFinalizeHotphraseOggSilenceWindow))
+                return hotphraseOggProbeReady ||
+                       (turnAge >= AutoFinalizeMinTurnAge &&
+                        turnState.BufferedAudioBytes >= AutoFinalizeMinBufferedAudioBytes &&
+                        pageCounts.AudioBearingPageCount >= AutoFinalizeMinBufferedAudioPages);
+
+            return ShouldContinuousProbeHotphraseOggAudio(turnState, pageCounts, turnAge);
         }
 
         return transcriptHintEarlyFinalize ||
@@ -2260,6 +2320,23 @@ public sealed class WebSocketTurnFinalizationService(
             receivedEndOfStream,
             earlyProbeReady,
             transcriptHintEarlyFinalize);
+    }
+
+    private static bool HasContentSilence(WebSocketTurnState turnState, TimeSpan requiredSilence)
+    {
+        if (!HasOggOpusFrames(turnState) || turnState.BufferedAudioFrames.Count == 0)
+            return false;
+
+        try
+        {
+            return OpusSpeechActivityDetector.HasTrailingSilence(
+                turnState.BufferedAudioFrames,
+                requiredSilence);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
 
     private static TimeSpan ResolveAutoFinalizeSilenceWindow(WebSocketTurnState turnState)

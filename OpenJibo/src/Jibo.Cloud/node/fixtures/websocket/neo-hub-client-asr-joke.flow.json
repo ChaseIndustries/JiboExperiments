@@ -70,7 +70,7 @@
         },
         {
           "type": "SKILL_ACTION",
-          "delayMs": 75,
+          "delayMs": 0,
           "jsonSubset": {
             "type": "SKILL_ACTION",
             "transID": "fixture-trans-joke",
