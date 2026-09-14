@@ -452,24 +452,10 @@ public sealed class ResponsePlanToSocketMessagesMapper
                 125));
         }
 
-        if (isClockSkillLaunch &&
-            !isCloudOwnedFollowUp &&
-            !string.Equals(messageType, "CLIENT_NLU", StringComparison.OrdinalIgnoreCase) &&
-            !IsLocalClockFollowUpTurn(rules))
-        {
-            messages.Add(new SocketReplyPlan(
-                JsonSerializer.Serialize(BuildSkillRedirectPayload(
-                    transId,
-                    "@be/clock",
-                    outboundIntent,
-                    outboundAsrText,
-                    outboundRules,
-                    entities)),
-                cloudSpeakDelayMs));
-            messages.Add(new SocketReplyPlan(
-                JsonSerializer.Serialize(BuildCompletionOnlySkillPayload(transId, "@be/clock")),
-                125));
-        }
+        // The initial LISTEN match already launches @be/clock (skillID + launch=true).
+        // Do not also send a delayed SKILL_REDIRECT: stock JiboClock treats it as a second
+        // local launch, which closes/reopens the clock screen and re-announces the time.
+        // CLIENT_NLU menu turns and local alarm/timer follow-ups already rely on LISTEN/EOS only.
 
         if ((isPhotoGalleryLaunch || isPhotoCreateLaunch) &&
             !string.Equals(messageType, "CLIENT_NLU", StringComparison.OrdinalIgnoreCase))
@@ -1191,17 +1177,6 @@ public sealed class ResponsePlanToSocketMessagesMapper
             string.Equals(rule, "globals/global_commands_launch", StringComparison.OrdinalIgnoreCase))
             ? ["globals/global_commands_launch"]
             : [];
-    }
-
-    private static bool IsLocalClockFollowUpTurn(IReadOnlyList<string> rules)
-    {
-        return rules.Any(static rule =>
-            string.Equals(rule, "clock/alarm_set_value", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(rule, "clock/timer_set_value", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(rule, "clock/alarm_timer_change", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(rule, "clock/alarm_timer_okay", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(rule, "clock/alarm_timer_none_set", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(rule, "clock/alarm_timer_query_menu", StringComparison.OrdinalIgnoreCase));
     }
 
     private static object BuildGenericFallbackSkillPayload(string transId)
