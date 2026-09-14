@@ -65,24 +65,30 @@ public static class OggOpusAudioNormalizer
     {
         if (pages.Count == 0) yield break;
 
-        ParsedOggPage[] parsed;
-        try
-        {
-            parsed = pages.SelectMany(ParsePages).ToArray();
-        }
-        catch (InvalidOperationException)
-        {
-            yield break;
-        }
-
         var pendingPacket = new List<byte>();
-        foreach (var parsedPage in parsed)
+        foreach (var page in pages)
         {
-            foreach (var packet in ReadCompletedPackets(parsedPage, pendingPacket))
+            ParsedOggPage[] parsed;
+            try
             {
-                if (IsOpusMetadata(packet)) continue;
-                if (!TryGetOpusPacketSampleCount(packet, out var samples)) continue;
-                yield return new OpusAudioPacket(packet.Length, samples);
+                // Skip corrupt/partial WebSocket frames instead of aborting the whole
+                // buffer — one bad frame used to zero out VAD and force the slow
+                // continuous-probe path (~3s).
+                parsed = ParsePages(page).ToArray();
+            }
+            catch (InvalidOperationException)
+            {
+                continue;
+            }
+
+            foreach (var parsedPage in parsed)
+            {
+                foreach (var packet in ReadCompletedPackets(parsedPage, pendingPacket))
+                {
+                    if (IsOpusMetadata(packet)) continue;
+                    if (!TryGetOpusPacketSampleCount(packet, out var samples)) continue;
+                    yield return new OpusAudioPacket(packet.Length, samples);
+                }
             }
         }
     }

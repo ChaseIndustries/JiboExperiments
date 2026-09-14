@@ -765,7 +765,7 @@ public sealed class JiboWebSocketServiceTests
 
         var session = stateStore.FindSessionByToken("hub-hotphrase-ogg-continuous-clock-token");
         Assert.NotNull(session);
-        session.TurnState.FirstAudioReceivedUtc = DateTimeOffset.UtcNow - TimeSpan.FromMilliseconds(1800);
+        session.TurnState.FirstAudioReceivedUtc = DateTimeOffset.UtcNow - TimeSpan.FromMilliseconds(2900);
         session.TurnState.LastAudioReceivedUtc = DateTimeOffset.UtcNow;
 
         var replies = await service.HandleMessageAsync(new WebSocketMessageEnvelope

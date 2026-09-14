@@ -82,6 +82,7 @@ public static class ServiceCollectionExtensions
             llmInstructions);
 
         services.AddSingleton(sttOptions);
+        services.AddHostedService<WhisperServerHostedService>();
         services.AddSingleton(openWeatherOptions);
         services.AddSingleton(newsApiOptions);
         services.AddSingleton(holidayOptions);

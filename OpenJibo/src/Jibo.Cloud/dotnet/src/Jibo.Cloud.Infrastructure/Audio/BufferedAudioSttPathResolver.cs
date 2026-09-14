@@ -6,6 +6,7 @@ public static class BufferedAudioSttPathResolver
 {
     private const string LegacyLinuxFfmpegPath = "/usr/bin/ffmpeg";
     private const string LegacyLinuxWhisperCliPath = "/usr/bin/whisper.cpp/build/bin/whisper-cli";
+    private const string LegacyLinuxWhisperServerPath = "/usr/bin/whisper.cpp/build/bin/whisper-server";
     private const string LegacyLinuxWhisperModelPath = "/usr/bin/whisper.cpp/models/ggml-base.en.bin";
 
     public static BufferedAudioSttOptions Resolve(BufferedAudioSttOptions source)
@@ -25,12 +26,30 @@ public static class BufferedAudioSttPathResolver
         string? homeDirectory,
         OperatingSystemPlatform platform)
     {
+        var whisperCliPath = ResolveExecutable(
+            source.WhisperCliPath,
+            ["OPENJIBO_STT_WHISPER_CLI_PATH", "WHISPER_CLI_PATH"],
+            LegacyLinuxWhisperCliPath,
+            BuildWhisperCliCandidates(platform, homeDirectory),
+            homeDirectory,
+            getEnvironmentVariable,
+            fileExists);
+
+        var whisperServerEnableEnv = getEnvironmentVariable("OPENJIBO_STT_ENABLE_WHISPER_SERVER");
+        // Warm server is preferred whenever local whisper.cpp STT is on (dotnet run, published
+        // binary, container). Explicit false via env still disables it.
+        var enableWhisperServer = !IsFalsy(whisperServerEnableEnv) &&
+                                  (source.EnableWhisperServer ||
+                                   IsTruthy(whisperServerEnableEnv) ||
+                                   (source.AutoStartWhisperServer && source.EnableLocalWhisperCpp));
+
         return new BufferedAudioSttOptions
         {
             EnableLocalWhisperCpp = source.EnableLocalWhisperCpp,
             EnableAzureSpeech = source.EnableAzureSpeech,
-            EnableWhisperServer = source.EnableWhisperServer ||
-                                 IsTruthy(getEnvironmentVariable("OPENJIBO_STT_ENABLE_WHISPER_SERVER")),
+            EnableWhisperServer = enableWhisperServer,
+            AutoStartWhisperServer = source.AutoStartWhisperServer &&
+                                     !IsFalsy(getEnvironmentVariable("OPENJIBO_STT_AUTOSTART_WHISPER_SERVER")),
             FfmpegPath = ResolveExecutable(
                 source.FfmpegPath,
                 ["OPENJIBO_STT_FFMPEG_PATH", "FFMPEG_PATH"],
@@ -39,14 +58,7 @@ public static class BufferedAudioSttPathResolver
                 homeDirectory,
                 getEnvironmentVariable,
                 fileExists),
-            WhisperCliPath = ResolveExecutable(
-                source.WhisperCliPath,
-                ["OPENJIBO_STT_WHISPER_CLI_PATH", "WHISPER_CLI_PATH"],
-                LegacyLinuxWhisperCliPath,
-                BuildWhisperCliCandidates(platform, homeDirectory),
-                homeDirectory,
-                getEnvironmentVariable,
-                fileExists),
+            WhisperCliPath = whisperCliPath,
             WhisperModelPath = ResolveRequiredFile(
                 source.WhisperModelPath,
                 ["OPENJIBO_STT_WHISPER_MODEL_PATH", "WHISPER_MODEL_PATH"],
@@ -55,10 +67,17 @@ public static class BufferedAudioSttPathResolver
                 homeDirectory,
                 getEnvironmentVariable,
                 fileExists),
+            WhisperServerBinPath = ResolveWhisperServerBinPath(
+                source.WhisperServerBinPath,
+                whisperCliPath,
+                getEnvironmentVariable,
+                fileExists,
+                platform,
+                homeDirectory),
             WhisperServerUrl = ResolveOptionalString(
                 source.WhisperServerUrl,
                 ["OPENJIBO_STT_WHISPER_SERVER_URL", "WHISPER_SERVER_URL"],
-                getEnvironmentVariable) ?? "http://127.0.0.1:8080",
+                getEnvironmentVariable) ?? "http://127.0.0.1:8090",
             AzureSpeechRegion = source.AzureSpeechRegion,
             AzureSpeechSubscriptionKey = source.AzureSpeechSubscriptionKey,
             AzureSpeechEndpoint = source.AzureSpeechEndpoint,
@@ -519,6 +538,108 @@ public static class BufferedAudioSttPathResolver
                string.Equals(value, "true", StringComparison.OrdinalIgnoreCase) ||
                string.Equals(value, "yes", StringComparison.OrdinalIgnoreCase) ||
                string.Equals(value, "on", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsFalsy(string? value)
+    {
+        return string.Equals(value, "0", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(value, "false", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(value, "no", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(value, "off", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? ResolveWhisperServerBinPath(
+        string? configured,
+        string? whisperCliPath,
+        Func<string, string?> getEnvironmentVariable,
+        Func<string, bool> fileExists,
+        OperatingSystemPlatform platform,
+        string? homeDirectory)
+    {
+        configured = NormalizeConfiguredPath(configured, homeDirectory);
+        if (IsRelativeOrExistingAbsolute(configured, fileExists)) return configured;
+
+        var environmentPath = ResolveEnvironmentPath(
+            ["OPENJIBO_STT_WHISPER_SERVER_BIN", "WHISPER_SERVER_BIN"],
+            homeDirectory,
+            getEnvironmentVariable,
+            fileExists);
+        if (!string.IsNullOrWhiteSpace(environmentPath)) return environmentPath;
+
+        foreach (var sibling in BuildWhisperServerSiblingCandidates(whisperCliPath))
+        {
+            if (IsRelativeOrExistingAbsolute(sibling, fileExists)) return sibling;
+        }
+
+        return BuildWhisperServerCandidates(platform, homeDirectory)
+                   .FirstOrDefault(candidate => IsRelativeOrExistingAbsolute(candidate, fileExists)) ??
+               configured;
+    }
+
+    private static IEnumerable<string> BuildWhisperServerSiblingCandidates(string? whisperCliPath)
+    {
+        if (string.IsNullOrWhiteSpace(whisperCliPath)) yield break;
+        if (!Path.IsPathRooted(whisperCliPath) && !ContainsDirectorySeparator(whisperCliPath)) yield break;
+
+        string? directory;
+        try
+        {
+            directory = Path.GetDirectoryName(Path.GetFullPath(whisperCliPath));
+        }
+        catch (Exception)
+        {
+            yield break;
+        }
+
+        if (string.IsNullOrWhiteSpace(directory)) yield break;
+
+        yield return Path.Combine(directory, "whisper-server");
+        yield return Path.Combine(directory, "whisper-server.exe");
+    }
+
+    private static IReadOnlyList<string> BuildWhisperServerCandidates(OperatingSystemPlatform platform,
+        string? homeDirectory)
+    {
+        var candidates = new List<string>();
+        switch (platform)
+        {
+            case OperatingSystemPlatform.Windows:
+                candidates.AddRange([
+                    @"C:\Program Files\whisper.cpp\build\bin\Release\whisper-server.exe",
+                    @"C:\Program Files\whisper.cpp\build\bin\whisper-server.exe",
+                    @"C:\Program Files\whisper-cpp\build\bin\Release\whisper-server.exe",
+                    @"C:\Program Files\whisper-cpp\build\bin\whisper-server.exe"
+                ]);
+                break;
+            case OperatingSystemPlatform.MacOS:
+                candidates.AddRange([
+                    "/opt/homebrew/bin/whisper-server",
+                    "/usr/local/bin/whisper-server",
+                    "/opt/homebrew/opt/whisper-cpp/bin/whisper-server",
+                    "/usr/local/opt/whisper-cpp/bin/whisper-server"
+                ]);
+                break;
+            case OperatingSystemPlatform.Linux:
+                candidates.AddRange([
+                    LegacyLinuxWhisperServerPath,
+                    "/usr/local/bin/whisper-server",
+                    "/usr/bin/whisper.cpp/build/bin/whisper-server"
+                ]);
+                break;
+        }
+
+        if (!string.IsNullOrWhiteSpace(homeDirectory))
+            candidates.AddRange([
+                Path.Combine(homeDirectory, "whisper.cpp", "build", "bin", "whisper-server"),
+                Path.Combine(homeDirectory, "whisper.cpp", "build", "bin", "Release", "whisper-server.exe"),
+                Path.Combine(homeDirectory, "src", "whisper.cpp", "build", "bin", "whisper-server"),
+                Path.Combine(homeDirectory, "Code", "whisper.cpp", "build", "bin", "whisper-server"),
+                Path.Combine(homeDirectory, "EZJiboServer", "whisper.cpp", "build", "bin", "whisper-server"),
+                Path.Combine(homeDirectory, "EZOpenJibo", "whisper.cpp", "build", "bin", "whisper-server")
+            ]);
+
+        candidates.Add("whisper-server");
+        return candidates;
     }
 
     private static string? ResolveOptionalString(

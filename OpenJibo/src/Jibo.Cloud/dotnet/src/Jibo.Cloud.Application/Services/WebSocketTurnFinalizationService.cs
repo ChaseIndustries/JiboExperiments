@@ -50,9 +50,12 @@ public sealed class WebSocketTurnFinalizationService(
     private static readonly TimeSpan AutoFinalizeHotphraseOggEarlyProbeGap = TimeSpan.FromMilliseconds(550);
     private static readonly TimeSpan AutoFinalizeEarlyProbeRetryInterval = TimeSpan.FromMilliseconds(250);
 
-    // Safety net only when VAD cannot see trailing quiet. Prefer content-silence above.
+    // Safety net only when VAD cannot see trailing quiet. Mid-utterance probes at
+    // ~1.2s caused incomplete STT retries that stacked to ~3-3.5s on longer commands.
     private static readonly TimeSpan
-        AutoFinalizeHotphraseOggContinuousProbeMinTurnAge = TimeSpan.FromMilliseconds(1200);
+        AutoFinalizeHotphraseOggContinuousProbeMinTurnAge = TimeSpan.FromMilliseconds(2800);
+    private static readonly TimeSpan AutoFinalizeHotphraseOggContinuousProbeTrailingSilence =
+        TimeSpan.FromMilliseconds(300);
 
     private static readonly TimeSpan AutoFinalizeHardBufferedAudioAge = TimeSpan.FromSeconds(8);
     private static readonly TimeSpan AutoFinalizeNoAudioListenAge = TimeSpan.FromSeconds(9);
@@ -2161,9 +2164,17 @@ public sealed class WebSocketTurnFinalizationService(
         if (!IsHotphraseOggProbeCandidate(turnState) || HasReceivedOggEndOfStream(turnState))
             return false;
 
-        return turnAge >= AutoFinalizeHotphraseOggContinuousProbeMinTurnAge &&
-               turnState.BufferedAudioBytes >= AutoFinalizeHotphraseOggContinuousProbeMinBufferedAudioBytes &&
-               pageCounts.AudioBearingPageCount >= AutoFinalizeHotphraseOggContinuousProbeMinAudioPages;
+        if (turnState.BufferedAudioBytes < AutoFinalizeHotphraseOggContinuousProbeMinBufferedAudioBytes ||
+            pageCounts.AudioBearingPageCount < AutoFinalizeHotphraseOggContinuousProbeMinAudioPages)
+            return false;
+
+        // Fast continuous-stream path: audio-clock trailing quiet after speech.
+        if (turnAge >= AutoFinalizeMinTurnAge &&
+            HasContentSilence(turnState, AutoFinalizeHotphraseOggContinuousProbeTrailingSilence))
+            return true;
+
+        // Hard fallback only — do not probe mid-utterance on wall-clock alone.
+        return turnAge >= AutoFinalizeHotphraseOggContinuousProbeMinTurnAge;
     }
 
     private static bool IsHotphraseOggProbeCandidate(WebSocketTurnState turnState)

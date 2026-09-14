@@ -5,10 +5,18 @@ public sealed class BufferedAudioSttOptions
     public bool EnableLocalWhisperCpp { get; set; }
     public bool EnableAzureSpeech { get; set; }
     public bool EnableWhisperServer { get; set; }
+    /// <summary>
+    /// When true (default), the API process starts a local whisper-server for loopback
+    /// WhisperServerUrl values if one is not already listening. Applies to dotnet run,
+    /// published binaries, and containers — not Docker-only.
+    /// </summary>
+    public bool AutoStartWhisperServer { get; set; } = true;
     public string? FfmpegPath { get; set; }
     public string? WhisperCliPath { get; set; }
     public string? WhisperModelPath { get; set; }
-    public string? WhisperServerUrl { get; set; } = "http://127.0.0.1:8080";
+    /// <summary>Optional path to whisper.cpp whisper-server. Discovered beside whisper-cli when unset.</summary>
+    public string? WhisperServerBinPath { get; set; }
+    public string? WhisperServerUrl { get; set; } = "http://127.0.0.1:8090";
     public string? AzureSpeechRegion { get; set; }
     public string? AzureSpeechSubscriptionKey { get; set; }
     public string? AzureSpeechEndpoint { get; set; }

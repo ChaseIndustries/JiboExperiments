@@ -175,6 +175,98 @@ public sealed class LocalWhisperCppBufferedAudioSttStrategyTests
     }
 
     [Fact]
+    public void Resolve_EnablesWhisperServer_WhenLocalWhisperCppAndAutoStartAreOn()
+    {
+        var resolved = BufferedAudioSttPathResolver.Resolve(
+            new BufferedAudioSttOptions
+            {
+                EnableLocalWhisperCpp = true,
+                EnableWhisperServer = false,
+                AutoStartWhisperServer = true,
+                FfmpegPath = "ffmpeg",
+                WhisperCliPath = "/custom/bin/whisper-cli",
+                WhisperModelPath = "/custom/models/ggml-base.en.bin"
+            },
+            _ => null,
+            path => path.StartsWith("/custom/", StringComparison.Ordinal),
+            null,
+            OperatingSystemPlatform.Linux);
+
+        Assert.True(resolved.EnableWhisperServer);
+        Assert.True(resolved.AutoStartWhisperServer);
+        Assert.Equal("http://127.0.0.1:8090", resolved.WhisperServerUrl);
+    }
+
+    [Fact]
+    public void Resolve_DiscoversWhisperServerBesideWhisperCli()
+    {
+        var existingPaths = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "/opt/homebrew/bin/whisper-cli",
+            "/opt/homebrew/bin/whisper-server",
+            "/opt/homebrew/share/whisper-cpp/models/ggml-base.en.bin"
+        };
+
+        var resolved = BufferedAudioSttPathResolver.Resolve(
+            new BufferedAudioSttOptions
+            {
+                EnableLocalWhisperCpp = true,
+                FfmpegPath = "ffmpeg",
+                WhisperCliPath = "/opt/homebrew/bin/whisper-cli",
+                WhisperModelPath = "/opt/homebrew/share/whisper-cpp/models/ggml-base.en.bin",
+                WhisperServerBinPath = null
+            },
+            _ => null,
+            existingPaths.Contains,
+            null,
+            OperatingSystemPlatform.MacOS);
+
+        Assert.Equal("/opt/homebrew/bin/whisper-server", resolved.WhisperServerBinPath);
+    }
+
+    [Fact]
+    public void Resolve_RespectsExplicitWhisperServerDisableEnv()
+    {
+        var resolved = BufferedAudioSttPathResolver.Resolve(
+            new BufferedAudioSttOptions
+            {
+                EnableLocalWhisperCpp = true,
+                EnableWhisperServer = true,
+                AutoStartWhisperServer = true,
+                FfmpegPath = "ffmpeg",
+                WhisperCliPath = "whisper-cli",
+                WhisperModelPath = "models/ggml-base.en.bin"
+            },
+            name => name == "OPENJIBO_STT_ENABLE_WHISPER_SERVER" ? "false" : null,
+            _ => true,
+            null,
+            OperatingSystemPlatform.Linux);
+
+        Assert.False(resolved.EnableWhisperServer);
+    }
+
+    [Fact]
+    public void TryParseLoopbackEndpoint_AcceptsLoopbackHttpUrls()
+    {
+        Assert.True(WhisperServerHostedService.TryParseLoopbackEndpoint(
+            "http://127.0.0.1:8090", out var host, out var port));
+        Assert.Equal("127.0.0.1", host);
+        Assert.Equal(8090, port);
+
+        Assert.True(WhisperServerHostedService.TryParseLoopbackEndpoint(
+            "http://localhost:8090/", out host, out port));
+        Assert.Equal("localhost", host);
+        Assert.Equal(8090, port);
+    }
+
+    [Fact]
+    public void TryParseLoopbackEndpoint_RejectsRemoteUrls()
+    {
+        Assert.False(WhisperServerHostedService.TryParseLoopbackEndpoint(
+            "http://whisper.example:8090", out _, out _));
+    }
+
+    [Fact]
     public void Resolve_UsesMacDiscovery_WhenLegacyLinuxDefaultsAreConfigured()
     {
         const string homeDirectory = "/Users/test";
