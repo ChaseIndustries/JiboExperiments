@@ -54,6 +54,40 @@ public sealed class OpusSpeechActivityDetectorTests
         Assert.False(OpusSpeechActivityDetector.HasTrailingSilence(pages, TimeSpan.FromMilliseconds(500)));
     }
 
+    [Fact]
+    public void HasTrailingSilence_DetectsRelativeDropAfterSpeech()
+    {
+        // Dense speech (~4 B/ms) followed by quieter room-noise packets (~1.5 B/ms)
+        // that sit above the absolute silence floor but well below peak speech.
+        var pages = new List<byte[]>
+        {
+            BuildOggPage(0x02, BuildOpusHead()),
+            BuildOggPage(0x00, BuildOpusTags()),
+            BuildOggPage(0x00, BuildOpusTocPacket(byteLength: 90)),
+            BuildOggPage(0x00, BuildOpusTocPacket(byteLength: 90)),
+            BuildOggPage(0x00, BuildOpusTocPacket(byteLength: 28)),
+            BuildOggPage(0x00, BuildOpusTocPacket(byteLength: 28)),
+            BuildOggPage(0x00, BuildOpusTocPacket(byteLength: 28)),
+            BuildOggPage(0x00, BuildOpusTocPacket(byteLength: 28)),
+            BuildOggPage(0x00, BuildOpusTocPacket(byteLength: 28)),
+            BuildOggPage(0x00, BuildOpusTocPacket(byteLength: 28)),
+            BuildOggPage(0x00, BuildOpusTocPacket(byteLength: 28)),
+            BuildOggPage(0x00, BuildOpusTocPacket(byteLength: 28)),
+            BuildOggPage(0x00, BuildOpusTocPacket(byteLength: 28)),
+            BuildOggPage(0x00, BuildOpusTocPacket(byteLength: 28)),
+            BuildOggPage(0x00, BuildOpusTocPacket(byteLength: 28)),
+            BuildOggPage(0x00, BuildOpusTocPacket(byteLength: 28)),
+            BuildOggPage(0x00, BuildOpusTocPacket(byteLength: 28)),
+            BuildOggPage(0x00, BuildOpusTocPacket(byteLength: 28)),
+            BuildOggPage(0x00, BuildOpusTocPacket(byteLength: 28)),
+            BuildOggPage(0x04, BuildOpusTocPacket(byteLength: 28))
+        };
+
+        // 16 quiet packets * 20ms = 320ms trailing relative silence.
+        Assert.True(OpusSpeechActivityDetector.HasTrailingSilence(pages, TimeSpan.FromMilliseconds(300)));
+        Assert.False(OpusSpeechActivityDetector.HasTrailingSilence(pages, TimeSpan.FromMilliseconds(500)));
+    }
+
     private static byte[] BuildOpusHead()
     {
         var packet = new byte[19];

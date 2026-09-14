@@ -14,12 +14,20 @@ public static class OpusSpeechActivityDetector
 
     /// <summary>
     /// Packets at or below this many bytes-per-millisecond of audio are treated as silence.
-    /// ~0.8 B/ms ≈ 6.4 kbps — below typical speech Opus bitrates, above empty DTX.
+    /// ~1.2 B/ms ≈ 9.6 kbps — below typical speech Opus bitrates, above empty DTX.
+    /// Tuned for robot comfort-noise / low-energy trailing frames that were missing
+    /// the older 0.8 B/ms cutoff and forced the 1.8s continuous-probe path (~3-4s).
     /// </summary>
-    public const double SilenceBytesPerMillisecond = 0.8;
+    public const double SilenceBytesPerMillisecond = 1.2;
 
     /// <summary>Absolute packet size below which a packet is always silence/CN.</summary>
-    public const int AbsoluteSilencePacketBytes = 12;
+    public const int AbsoluteSilencePacketBytes = 24;
+
+    /// <summary>
+    /// Trailing packets below this fraction of peak speech density count as quiet even
+    /// when they exceed the absolute silence floor (room-noise after the user stops).
+    /// </summary>
+    public const double RelativeSilenceFractionOfPeak = 0.35;
 
     public static bool HasTrailingSilence(
         IReadOnlyList<byte[]> pages,
@@ -31,10 +39,11 @@ public static class OpusSpeechActivityDetector
         var packets = OggOpusAudioNormalizer.EnumerateAudioPackets(pages).ToArray();
         if (packets.Length == 0) return false;
 
+        var peakSpeechBytesPerMs = MeasurePeakSpeechDensity(packets, silenceBytesPerMillisecond);
         var lastSpeechIndex = -1;
         for (var index = 0; index < packets.Length; index += 1)
         {
-            if (!IsSilencePacket(packets[index], silenceBytesPerMillisecond))
+            if (!IsSilencePacket(packets[index], silenceBytesPerMillisecond, peakSpeechBytesPerMs))
                 lastSpeechIndex = index;
         }
 
@@ -44,7 +53,12 @@ public static class OpusSpeechActivityDetector
         var requiredSamples = (ulong)Math.Ceiling(requiredSilence.TotalSeconds * OpusSampleRate);
         ulong trailingSilenceSamples = 0;
         for (var index = lastSpeechIndex + 1; index < packets.Length; index += 1)
+        {
+            if (!IsSilencePacket(packets[index], silenceBytesPerMillisecond, peakSpeechBytesPerMs))
+                return false;
+
             trailingSilenceSamples += packets[index].SampleCount;
+        }
 
         return trailingSilenceSamples >= requiredSamples;
     }
@@ -54,10 +68,13 @@ public static class OpusSpeechActivityDetector
         double silenceBytesPerMillisecond = SilenceBytesPerMillisecond)
     {
         var packets = OggOpusAudioNormalizer.EnumerateAudioPackets(pages).ToArray();
+        if (packets.Length == 0) return TimeSpan.Zero;
+
+        var peakSpeechBytesPerMs = MeasurePeakSpeechDensity(packets, silenceBytesPerMillisecond);
         var lastSpeechIndex = -1;
         for (var index = 0; index < packets.Length; index += 1)
         {
-            if (!IsSilencePacket(packets[index], silenceBytesPerMillisecond))
+            if (!IsSilencePacket(packets[index], silenceBytesPerMillisecond, peakSpeechBytesPerMs))
                 lastSpeechIndex = index;
         }
 
@@ -65,21 +82,59 @@ public static class OpusSpeechActivityDetector
 
         ulong trailingSilenceSamples = 0;
         for (var index = lastSpeechIndex + 1; index < packets.Length; index += 1)
+        {
+            if (!IsSilencePacket(packets[index], silenceBytesPerMillisecond, peakSpeechBytesPerMs))
+                break;
+
             trailingSilenceSamples += packets[index].SampleCount;
+        }
 
         return TimeSpan.FromSeconds(trailingSilenceSamples / (double)OpusSampleRate);
     }
 
     public static bool IsSilencePacket(
         OpusAudioPacket packet,
-        double silenceBytesPerMillisecond = SilenceBytesPerMillisecond)
+        double silenceBytesPerMillisecond = SilenceBytesPerMillisecond,
+        double peakSpeechBytesPerMs = 0)
     {
         if (packet.SampleCount == 0) return true;
         if (packet.ByteLength <= AbsoluteSilencePacketBytes) return true;
 
-        var durationMs = packet.SampleCount * 1000.0 / OpusSampleRate;
-        if (durationMs <= 0) return true;
+        var density = MeasureBytesPerMillisecond(packet);
+        if (density <= silenceBytesPerMillisecond) return true;
 
-        return packet.ByteLength / durationMs <= silenceBytesPerMillisecond;
+        // Relative drop vs peak speech: quiet room noise after the user stops talking.
+        if (peakSpeechBytesPerMs > silenceBytesPerMillisecond &&
+            density <= peakSpeechBytesPerMs * RelativeSilenceFractionOfPeak)
+            return true;
+
+        return false;
+    }
+
+    private static double MeasurePeakSpeechDensity(
+        IReadOnlyList<OpusAudioPacket> packets,
+        double silenceBytesPerMillisecond)
+    {
+        var peak = 0.0;
+        for (var index = 0; index < packets.Count; index += 1)
+        {
+            var packet = packets[index];
+            if (packet.SampleCount == 0 || packet.ByteLength <= AbsoluteSilencePacketBytes)
+                continue;
+
+            var density = MeasureBytesPerMillisecond(packet);
+            // Ignore absolute-floor quiet packets when estimating peak speech energy.
+            if (density <= silenceBytesPerMillisecond) continue;
+            if (density > peak) peak = density;
+        }
+
+        return peak;
+    }
+
+    private static double MeasureBytesPerMillisecond(OpusAudioPacket packet)
+    {
+        if (packet.SampleCount == 0) return 0;
+        var durationMs = packet.SampleCount * 1000.0 / OpusSampleRate;
+        return durationMs <= 0 ? 0 : packet.ByteLength / durationMs;
     }
 }

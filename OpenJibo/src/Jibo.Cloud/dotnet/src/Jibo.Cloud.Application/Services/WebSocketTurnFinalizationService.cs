@@ -41,18 +41,18 @@ public sealed class WebSocketTurnFinalizationService(
     private const int AutoFinalizeContinuationDeferralMaxAttempts = 4;
     private static readonly TimeSpan AutoFinalizeReconnectGrace = TimeSpan.FromSeconds(4);
     // Fast path when Opus content-silence (VAD) confirms end-of-speech.
-    private static readonly TimeSpan AutoFinalizeMinTurnAge = TimeSpan.FromMilliseconds(400);
-    private static readonly TimeSpan AutoFinalizeSilenceWindow = TimeSpan.FromMilliseconds(450);
-    private static readonly TimeSpan AutoFinalizeHotphraseOggSilenceWindow = TimeSpan.FromMilliseconds(700);
-    // Arrival-gap early probe must stay conservative: robots batch OGG frames with
-    // multi-hundred-ms gaps mid-utterance. Cutting at 250/300ms truncated commands
-    // like "what's your favorite color" into incomplete STT + retry storms (~3s).
-    private static readonly TimeSpan AutoFinalizeHotphraseOggEarlyProbeMinTurnAge = TimeSpan.FromMilliseconds(900);
-    private static readonly TimeSpan AutoFinalizeHotphraseOggEarlyProbeGap = TimeSpan.FromMilliseconds(1000);
-    private static readonly TimeSpan AutoFinalizeEarlyProbeRetryInterval = TimeSpan.FromMilliseconds(400);
+    private static readonly TimeSpan AutoFinalizeMinTurnAge = TimeSpan.FromMilliseconds(300);
+    private static readonly TimeSpan AutoFinalizeSilenceWindow = TimeSpan.FromMilliseconds(350);
+    private static readonly TimeSpan AutoFinalizeHotphraseOggSilenceWindow = TimeSpan.FromMilliseconds(400);
+    // Arrival-gap early probe stays above typical mid-utterance frame batching (~300-500ms)
+    // but no longer waits a full second after the last frame.
+    private static readonly TimeSpan AutoFinalizeHotphraseOggEarlyProbeMinTurnAge = TimeSpan.FromMilliseconds(700);
+    private static readonly TimeSpan AutoFinalizeHotphraseOggEarlyProbeGap = TimeSpan.FromMilliseconds(550);
+    private static readonly TimeSpan AutoFinalizeEarlyProbeRetryInterval = TimeSpan.FromMilliseconds(250);
 
+    // Safety net only when VAD cannot see trailing quiet. Prefer content-silence above.
     private static readonly TimeSpan
-        AutoFinalizeHotphraseOggContinuousProbeMinTurnAge = TimeSpan.FromMilliseconds(1800);
+        AutoFinalizeHotphraseOggContinuousProbeMinTurnAge = TimeSpan.FromMilliseconds(1200);
 
     private static readonly TimeSpan AutoFinalizeHardBufferedAudioAge = TimeSpan.FromSeconds(8);
     private static readonly TimeSpan AutoFinalizeNoAudioListenAge = TimeSpan.FromSeconds(9);
@@ -2091,14 +2091,30 @@ public sealed class WebSocketTurnFinalizationService(
             return false;
 
         var turnAge = DateTimeOffset.UtcNow - turnState.FirstAudioReceivedUtc.Value;
-        if (turnAge < AutoFinalizeHotphraseOggEarlyProbeMinTurnAge)
-            return false;
-
         var pageCounts = DescribeBufferedAudioPages(turnState);
         if (turnState.BufferedAudioBytes < AutoFinalizeMinBufferedAudioBytes)
             return false;
 
         if (pageCounts.AudioBearingPageCount < AutoFinalizeMinBufferedAudioPages)
+            return false;
+
+        if (!CanRetryEarlyAutoFinalizeProbe(turnState))
+            return false;
+
+        // Content-silence VAD is the fast path — do not wait for EarlyProbeMinTurnAge.
+        // The previous gate forced even quiet-after-speech turns to sit until 900ms+,
+        // and continuous streams without arrival gaps fell through to the 1.8s probe (~3-4s).
+        if (HasContentSilence(turnState, AutoFinalizeHotphraseOggSilenceWindow) &&
+            turnAge >= AutoFinalizeMinTurnAge &&
+            IsHotphraseOggProbeCandidate(turnState))
+            return true;
+
+        if (HasReceivedOggEndOfStream(turnState) &&
+            turnAge >= AutoFinalizeMinTurnAge &&
+            IsHotphraseOggProbeCandidate(turnState))
+            return true;
+
+        if (turnAge < AutoFinalizeHotphraseOggEarlyProbeMinTurnAge)
             return false;
 
         var elapsedSinceLastAudio = turnState.LastAudioReceivedUtc.HasValue
@@ -2110,25 +2126,8 @@ public sealed class WebSocketTurnFinalizationService(
             pageCounts,
             turnAge);
 
-        if (!CanRetryEarlyAutoFinalizeProbe(turnState))
-            return false;
-
         if (!transcriptHintEarlyFinalize && elapsedSinceLastAudio < AutoFinalizeHotphraseOggEarlyProbeGap)
-        {
-            // Native robots keep streaming OGG while the mic is open, so a silence
-            // gap never appears in arrival time. Prefer Opus content-silence (VAD)
-            // and keep the continuous probe only as a safety net.
-            if (HasReceivedOggEndOfStream(turnState))
-                return hotphraseOggProbeReady;
-
-            if (HasContentSilence(turnState, AutoFinalizeHotphraseOggSilenceWindow))
-                return hotphraseOggProbeReady ||
-                       (turnAge >= AutoFinalizeMinTurnAge &&
-                        turnState.BufferedAudioBytes >= AutoFinalizeMinBufferedAudioBytes &&
-                        pageCounts.AudioBearingPageCount >= AutoFinalizeMinBufferedAudioPages);
-
             return ShouldContinuousProbeHotphraseOggAudio(turnState, pageCounts, turnAge);
-        }
 
         return transcriptHintEarlyFinalize ||
                hotphraseOggProbeReady ||
