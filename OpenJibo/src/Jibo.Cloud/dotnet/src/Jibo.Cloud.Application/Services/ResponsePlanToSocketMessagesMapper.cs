@@ -57,8 +57,9 @@ public sealed class ResponsePlanToSocketMessagesMapper
         var isClockSkillLaunch = string.Equals(skill?.SkillName, "@be/clock", StringComparison.OrdinalIgnoreCase);
         var isReportSkillLaunch = string.Equals(skill?.SkillName, "report-skill", StringComparison.OrdinalIgnoreCase);
         var isIntroductionsLaunch = string.Equals(skill?.SkillName, "@be/introductions", StringComparison.OrdinalIgnoreCase);
-        var idleRedirectDelayMs = 0;
+        var idleRedirectDelayMs = 75;
         var idleCompletionDelayMs = isTurnAroundCommand ? 750 : 125;
+        const int cloudSpeakDelayMs = 75;
         var localIntent = ReadSkillPayloadString(skill, "localIntent");
         var clockIntent = ReadSkillPayloadString(skill, "clockIntent");
         var clockDomain = ReadSkillPayloadString(skill, "domain");
@@ -356,7 +357,7 @@ public sealed class ResponsePlanToSocketMessagesMapper
                     outboundAsrText,
                     outboundRules,
                     entities)),
-                0));
+                cloudSpeakDelayMs));
             messages.Add(new SocketReplyPlan(
                 JsonSerializer.Serialize(BuildCompletionOnlySkillPayload(transId, "@be/word-of-the-day")),
                 125));
@@ -372,7 +373,7 @@ public sealed class ResponsePlanToSocketMessagesMapper
                     outboundAsrText,
                     outboundRules,
                     entities)),
-                0));
+                cloudSpeakDelayMs));
             messages.Add(new SocketReplyPlan(
                 JsonSerializer.Serialize(BuildCompletionOnlySkillPayload(transId, "@be/radio")),
                 125));
@@ -388,7 +389,7 @@ public sealed class ResponsePlanToSocketMessagesMapper
                     outboundAsrText,
                     outboundRules,
                     entities)),
-                0));
+                cloudSpeakDelayMs));
             messages.Add(new SocketReplyPlan(
                 JsonSerializer.Serialize(BuildCompletionOnlySkillPayload(transId, "@be/bad-apple")),
                 125));
@@ -432,7 +433,7 @@ public sealed class ResponsePlanToSocketMessagesMapper
         if (isVolumeControl)
             messages.Add(new SocketReplyPlan(
                 JsonSerializer.Serialize(BuildCompletionOnlySkillPayload(transId, "@be/nimbus")),
-                0));
+                cloudSpeakDelayMs));
 
         if (isSettingsLaunch &&
             !string.Equals(messageType, "CLIENT_NLU", StringComparison.OrdinalIgnoreCase))
@@ -445,7 +446,7 @@ public sealed class ResponsePlanToSocketMessagesMapper
                     outboundAsrText,
                     outboundRules,
                     entities)),
-                0));
+                cloudSpeakDelayMs));
             messages.Add(new SocketReplyPlan(
                 JsonSerializer.Serialize(BuildCompletionOnlySkillPayload(transId, "@be/settings")),
                 125));
@@ -464,7 +465,7 @@ public sealed class ResponsePlanToSocketMessagesMapper
                     outboundAsrText,
                     outboundRules,
                     entities)),
-                0));
+                cloudSpeakDelayMs));
             messages.Add(new SocketReplyPlan(
                 JsonSerializer.Serialize(BuildCompletionOnlySkillPayload(transId, "@be/clock")),
                 125));
@@ -482,7 +483,7 @@ public sealed class ResponsePlanToSocketMessagesMapper
                     outboundAsrText,
                     outboundRules,
                     entities)),
-                0));
+                cloudSpeakDelayMs));
             messages.Add(new SocketReplyPlan(
                 JsonSerializer.Serialize(BuildCompletionOnlySkillPayload(transId, skillId)),
                 125));
@@ -499,7 +500,7 @@ public sealed class ResponsePlanToSocketMessagesMapper
                     outboundAsrText,
                     outboundRules,
                     entities)),
-                0));
+                cloudSpeakDelayMs));
             messages.Add(new SocketReplyPlan(
                 JsonSerializer.Serialize(BuildCompletionOnlySkillPayload(transId, "@be/introductions")),
                 125));
@@ -511,7 +512,7 @@ public sealed class ResponsePlanToSocketMessagesMapper
         if (shouldEmitCloudSpeak)
             messages.Add(new SocketReplyPlan(
                 JsonSerializer.Serialize(BuildSkillPayload(plan, transId, speak!, skill, outboundAsrText)),
-                0));
+                cloudSpeakDelayMs));
 
         return messages;
     }
@@ -564,7 +565,7 @@ public sealed class ResponsePlanToSocketMessagesMapper
         if (emitSkillAction)
             messages.Add(new SocketReplyPlan(
                 JsonSerializer.Serialize(BuildSkillPayload(plan, transId, speak!, skill)),
-                0));
+                75));
         return messages;
     }
 
@@ -622,7 +623,7 @@ public sealed class ResponsePlanToSocketMessagesMapper
                 transID = transId,
                 data = new { }
             })),
-            new SocketReplyPlan(JsonSerializer.Serialize(BuildGenericFallbackSkillPayload(transId)), 0)
+            new SocketReplyPlan(JsonSerializer.Serialize(BuildGenericFallbackSkillPayload(transId)), 75)
         ];
     }
 

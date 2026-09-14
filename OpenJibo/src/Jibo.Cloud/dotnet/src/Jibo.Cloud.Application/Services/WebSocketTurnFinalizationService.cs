@@ -807,7 +807,15 @@ public sealed class WebSocketTurnFinalizationService(
                         allowFallbackOnMissingTranscript,
                         cancellationToken);
                     foreach (var reply in replies)
+                    {
+                        // Match WebSocketRequestCoordinator.SendRepliesAsync: Nimbus needs a beat
+                        // after LISTEN/EOS before chitchat SKILL_ACTION or play fails with the
+                        // robot-local "something went wrong" path. On-robot launches (@be/clock)
+                        // are more tolerant, which is why time/day still worked.
+                        if (reply.DelayMs > 0)
+                            await Task.Delay(reply.DelayMs, cancellationToken);
                         await sendAsync(reply, cancellationToken);
+                    }
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

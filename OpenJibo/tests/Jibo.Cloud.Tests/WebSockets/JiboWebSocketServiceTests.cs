@@ -78,7 +78,7 @@ public sealed class JiboWebSocketServiceTests
         Assert.Equal("LISTEN", ReadReplyType(replies[0]));
         Assert.Equal("EOS", ReadReplyType(replies[1]));
         Assert.Equal("SKILL_ACTION", ReadReplyType(replies[2]));
-        Assert.Equal(0, replies[2].DelayMs);
+        Assert.Equal(75, replies[2].DelayMs);
 
         using var listenPayload = JsonDocument.Parse(replies[0].Text!);
         Assert.Equal("hello jibo",
@@ -1110,7 +1110,7 @@ public sealed class JiboWebSocketServiceTests
         Assert.Equal("LISTEN", ReadReplyType(replies[0]));
         Assert.Equal("EOS", ReadReplyType(replies[1]));
         Assert.Equal("SKILL_ACTION", ReadReplyType(replies[2]));
-        Assert.Equal(0, replies[2].DelayMs);
+        Assert.Equal(75, replies[2].DelayMs);
 
         using var listenPayload = JsonDocument.Parse(replies[0].Text!);
         Assert.Equal("tell me a joke",
@@ -1173,7 +1173,7 @@ public sealed class JiboWebSocketServiceTests
         Assert.Equal("LISTEN", ReadReplyType(replies[0]));
         Assert.Equal("EOS", ReadReplyType(replies[1]));
         Assert.Equal("SKILL_ACTION", ReadReplyType(replies[2]));
-        Assert.Equal(0, replies[2].DelayMs);
+        Assert.Equal(75, replies[2].DelayMs);
 
         using var listenPayload = JsonDocument.Parse(replies[0].Text!);
         Assert.Equal("heyJibo",
@@ -2463,7 +2463,7 @@ public sealed class JiboWebSocketServiceTests
         Assert.Equal("LISTEN", ReadReplyType(replies[0]));
         Assert.Equal("EOS", ReadReplyType(replies[1]));
         Assert.Equal("SKILL_ACTION", ReadReplyType(replies[2]));
-        Assert.Equal(0, replies[2].DelayMs);
+        Assert.Equal(75, replies[2].DelayMs);
 
         using var listenPayload = JsonDocument.Parse(replies[0].Text!);
         var nlu = listenPayload.RootElement.GetProperty("data").GetProperty("nlu");
@@ -6346,7 +6346,7 @@ public sealed class JiboWebSocketServiceTests
         Assert.Equal("LISTEN", ReadReplyType(finalizeReplies[0]));
         Assert.Equal("EOS", ReadReplyType(finalizeReplies[1]));
         Assert.Equal("SKILL_ACTION", ReadReplyType(finalizeReplies[2]));
-        Assert.Equal(0, finalizeReplies[2].DelayMs);
+        Assert.Equal(75, finalizeReplies[2].DelayMs);
 
         using var listenPayload = JsonDocument.Parse(finalizeReplies[0].Text!);
         Assert.Equal("tell me a joke",
@@ -8637,7 +8637,7 @@ public sealed class JiboWebSocketServiceTests
         });
 
         Assert.Equal(3, replies.Count);
-        Assert.Equal(0, replies[2].DelayMs);
+        Assert.Equal(75, replies[2].DelayMs);
 
         using var eosPayload = JsonDocument.Parse(replies[1].Text!);
         Assert.Equal("EOS", eosPayload.RootElement.GetProperty("type").GetString());
