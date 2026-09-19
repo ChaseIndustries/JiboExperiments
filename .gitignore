@@ -422,8 +422,14 @@ FodyWeavers.xsd
 
 # OpenJibo live-run capture output
 OpenJibo/captures/
+**/captures/
 OpenJibo/.tmp/
 OpenJibo/.tmp*/
+OpenJibo/tts/.venv/
+OpenJibo/tts/*.wav
+OpenJibo/tts/*.mp3
+OpenJibo/tts/*.mp4
+OpenJibo/tts/compare/
 tmp/
 _tmp/
 _jibo_test_*/
