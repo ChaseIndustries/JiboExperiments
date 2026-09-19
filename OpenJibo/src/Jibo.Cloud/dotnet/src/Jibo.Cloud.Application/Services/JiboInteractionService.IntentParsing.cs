@@ -409,21 +409,104 @@ public sealed partial class JiboInteractionService
 
     private static string? TryResolveWeatherLocationQuery(string transcript)
     {
-        var normalized = NormalizeCommandPhrase(transcript);
-        var match = WeatherLocationPattern.Match(normalized);
-        if (!match.Success) return null;
+        var normalized = StripTrailingWeatherFiller(NormalizeCommandPhrase(transcript));
+        if (string.IsNullOrWhiteSpace(normalized)) return null;
 
-        var candidate = match.Groups["location"].Value.Trim();
-        if (string.IsNullOrWhiteSpace(candidate)) return null;
+        var parts = WeatherLocationPattern.Split(normalized);
+        if (parts.Length > 1)
+        {
+            var fromClause = TryCleanWeatherLocationCandidate(parts[^1]);
+            if (fromClause is not null) return fromClause;
+        }
 
-        candidate = WeatherLocationSuffixPattern.Replace(candidate, string.Empty).Trim();
+        return TryReadNamedWeatherLocation(normalized) ?? TryReadTrailingWeatherLocation(normalized);
+    }
+
+    private static string? TryReadNamedWeatherLocation(string normalized)
+    {
+        string? lastGood = null;
+        foreach (Match topic in WeatherTopicWordPattern.Matches(normalized))
+        {
+            var before = normalized[..topic.Index].TrimEnd();
+            if (before.EndsWith("'s", StringComparison.Ordinal))
+                before = before[..^2].TrimEnd();
+            else if (before.EndsWith(" s", StringComparison.Ordinal))
+                before = before[..^2].TrimEnd();
+
+            var tokens = before.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var taken = new List<string>();
+            for (var index = tokens.Length - 1; index >= 0 && taken.Count < 4; index -= 1)
+            {
+                var token = StripWeatherLocationPossessive(tokens[index]);
+                if (IsWeatherLocationFillerToken(token)) break;
+                taken.Insert(0, token);
+            }
+
+            var candidate = TryCleanWeatherLocationCandidate(string.Join(' ', taken));
+            if (candidate is not null) lastGood = candidate;
+        }
+
+        return lastGood;
+    }
+
+    private static string? TryReadTrailingWeatherLocation(string normalized)
+    {
+        var lastTopic = WeatherTopicWordPattern.Matches(normalized).LastOrDefault();
+        if (lastTopic is not { Success: true }) return null;
+
+        var after = normalized[(lastTopic.Index + lastTopic.Length)..].Trim();
+        if (after.StartsWith("like ", StringComparison.Ordinal))
+            after = after["like ".Length..].Trim();
+        if (WeatherLocationPattern.IsMatch(after)) return null;
+
+        return TryCleanWeatherLocationCandidate(after);
+    }
+
+    private static string StripWeatherLocationPossessive(string token)
+    {
+        return token.EndsWith("'s", StringComparison.Ordinal) ? token[..^2] : token;
+    }
+
+    private static bool IsWeatherLocationFillerToken(string token)
+    {
+        return string.IsNullOrWhiteSpace(token) ||
+               WeatherLocationLeadFillerWords.Contains(token) ||
+               GenericWeatherLocationTerms.Contains(token) ||
+               WeatherLocationSuffixPattern.IsMatch(token);
+    }
+
+    private static string StripTrailingWeatherFiller(string value)
+    {
+        var normalized = TranscriptTextNormalizer.StripTrailingCourtesyWords(value);
+        var changed = true;
+        while (changed)
+        {
+            changed = false;
+            foreach (var phrase in CommandLeadPhrases.OrderByDescending(static phrase => phrase.Length))
+            {
+                if (string.IsNullOrWhiteSpace(phrase) ||
+                    !normalized.EndsWith($" {phrase}", StringComparison.Ordinal))
+                    continue;
+
+                normalized = normalized[..^(phrase.Length + 1)].TrimEnd();
+                changed = true;
+                break;
+            }
+        }
+
+        return normalized;
+    }
+
+    private static string? TryCleanWeatherLocationCandidate(string? value)
+    {
+        var candidate = WeatherLocationSuffixPattern.Replace(value ?? string.Empty, " ");
+        candidate = string.Join(' ', candidate.Split(' ', StringSplitOptions.RemoveEmptyEntries));
         if (string.IsNullOrWhiteSpace(candidate) ||
-            GenericWeatherLocationTerms.Contains(candidate))
+            GenericWeatherLocationTerms.Contains(candidate) ||
+            !candidate.Any(static character => char.IsLetter(character)))
             return null;
 
-        return string.IsNullOrWhiteSpace(candidate)
-            ? null
-            : CultureInfo.InvariantCulture.TextInfo.ToTitleCase(candidate);
+        return CultureInfo.InvariantCulture.TextInfo.ToTitleCase(candidate);
     }
 
     private static (double Latitude, double Longitude)? TryResolveWeatherCoordinates(TurnContext turn)

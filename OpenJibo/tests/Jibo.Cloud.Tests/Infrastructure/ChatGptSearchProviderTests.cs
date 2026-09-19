@@ -105,6 +105,39 @@ public sealed class ChatGptSearchProviderTests
         Assert.Equal("Donald Trump was born on June 14, 1946.", result!.AnswerText);
     }
 
+    [Theory]
+    [InlineData(
+        "Trump turns 80 on June 14 ([AP News](https://apnews.com/article/x?utm_source=openai)).",
+        "Trump turns 80 on June 14.")]
+    [InlineData(
+        "Trump turns 80 on June 14 ([AP](https://apnews.com/a), [BBC](https://bbc.com/b)).",
+        "Trump turns 80 on June 14.")]
+    [InlineData(
+        "He was born in Queens, per [Britannica](https://britannica.com/x).",
+        "He was born in Queens, per Britannica.")]
+    [InlineData(
+        "Paris is the capital of France ([Wikipedia](https://en.wikipedia.org/wiki/Paris_(city))).",
+        "Paris is the capital of France.")]
+    [InlineData(
+        "It is sunny today. See https://weather.example.com/today for more.",
+        "It is sunny today. See for more.")]
+    public async Task SearchAsync_StripsWebSearchCitations_ForSpeech(string content, string expected)
+    {
+        var handler = new RecordingHttpMessageHandler(_ => JsonResponse(
+            JsonSerializer.Serialize(new
+            {
+                choices = new[] { new { message = new { role = "assistant", content } } }
+            })));
+        var provider = CreateProvider(handler, model: "gpt-5-search-api");
+
+        var result = await provider.SearchAsync(new KnowledgeSearchRequest(
+            "When does Trump turn 80",
+            new SearchBackendSpec(SearchBackendKind.ChatGPT, "test-api-key", "gpt-5-search-api")));
+
+        Assert.NotNull(result);
+        Assert.Equal(expected, result!.AnswerText);
+    }
+
     [Fact]
     public async Task SearchAsync_ReturnsNull_WhenApiKeyMissing()
     {

@@ -253,7 +253,7 @@ public static class BufferedAudioSttPathResolver
             process.Start();
             var stdOutTask = process.StandardOutput.ReadToEndAsync();
             var stdErrTask = process.StandardError.ReadToEndAsync();
-            if (!process.WaitForExit(8_000))
+            if (!process.WaitForExit(45_000))
             {
                 try { process.Kill(entireProcessTree: true); } catch { /* best-effort */ }
                 return new WhisperCppProbeResult(false, "Timed out waiting for -h output.");

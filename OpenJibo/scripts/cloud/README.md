@@ -8,6 +8,8 @@ These scripts help exercise the new .NET hosted cloud locally.
   Starts the legacy Node protocol oracle from `src/Jibo.Cloud/node`.
 - `Start-OpenJiboPlayground.ps1`
   Starts the direct local Jibo ASR/TTS Playground demo.
+- `start-jibo-clone-tts.sh`
+  Starts the local Melissa clone sidecar on `127.0.0.1:8091`. `make clone` wraps this.
 - `Invoke-CloudSmoke.ps1`
   Runs a few quick HTTP checks against a local OpenJibo cloud instance.
 - `Invoke-OpenJiboMigration.ps1`
@@ -63,7 +65,9 @@ These scripts help exercise the new .NET hosted cloud locally.
 - `New-CaptureBundle.ps1`
   Packages the capture root, capture index, and exported fixtures into a single zip bundle for group testing handoff, including the fixture name list in the manifest for quicker STT replay triage.
 - `start-dotnet-with-node-cert.sh`
-  Starts the .NET API on Linux using the same PEM certificate material already used by the Node server.
+  Starts the .NET API using the same PEM certificate material already used by the Node server.
+  From the OpenJibo directory, `make cloud` is the memorable wrapper (sudo, loads `.env`).
+  `make clone` starts `start-jibo-clone-tts.sh`. `make reconnect` prints the robot reconnect checklist.
 - `invoke-live-jibo-prep.sh`
   Bash equivalent of the live-run prep checklist for Ubuntu.
 - `invoke-openjibo-migration.sh`

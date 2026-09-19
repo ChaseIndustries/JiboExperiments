@@ -15,10 +15,12 @@ ASPNETCORE_URLS="${ASPNETCORE_URLS:-https://0.0.0.0:443;http://0.0.0.0:24605}"
 DOTNET_ENVIRONMENT="${DOTNET_ENVIRONMENT:-Development}"
 CAPTURE_DIRECTORY="${CAPTURE_DIRECTORY:-${REPO_ROOT}/captures/websocket}"
 PROTOCOL_CAPTURE_DIRECTORY="${PROTOCOL_CAPTURE_DIRECTORY:-${REPO_ROOT}/captures/http}"
+STATE_DIRECTORY="${STATE_DIRECTORY:-${REPO_ROOT}/captures/state}"
 
 mkdir -p "$(dirname "${PFX_OUT}")"
 mkdir -p "${CAPTURE_DIRECTORY}"
 mkdir -p "${PROTOCOL_CAPTURE_DIRECTORY}"
+mkdir -p "${STATE_DIRECTORY}"
 
 if [[ ! -f "${CERT_PEM}" ]]; then
   echo "Missing CERT_PEM: ${CERT_PEM}" >&2
@@ -71,6 +73,56 @@ export ASPNETCORE_Kestrel__Certificates__Default__Path="${PFX_OUT}"
 export ASPNETCORE_Kestrel__Certificates__Default__Password="${PFX_PASSWORD}"
 export OpenJibo__Telemetry__DirectoryPath="${CAPTURE_DIRECTORY}"
 export OpenJibo__ProtocolTelemetry__DirectoryPath="${PROTOCOL_CAPTURE_DIRECTORY}"
+: "${OpenJibo__State__PersistencePath:=${STATE_DIRECTORY}/cloud-state.json}"
+: "${OpenJibo__PersonalMemory__PersistencePath:=${STATE_DIRECTORY}/personal-memory.json}"
+export OpenJibo__State__PersistencePath
+export OpenJibo__PersonalMemory__PersistencePath
+
+resolve_dotnet() {
+  if [[ -n "${DOTNET_ROOT:-}" && -x "${DOTNET_ROOT}/dotnet" ]]; then
+    printf '%s\n' "${DOTNET_ROOT}/dotnet"
+    return 0
+  fi
+
+  if command -v dotnet >/dev/null 2>&1; then
+    command -v dotnet
+    return 0
+  fi
+
+  local user_home="${HOME}"
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    user_home="$(eval echo "~${SUDO_USER}")"
+  fi
+
+  local candidate
+  for candidate in \
+    "${user_home}/.dotnet/dotnet" \
+    /usr/local/share/dotnet/dotnet \
+    /usr/share/dotnet/dotnet
+  do
+    if [[ -x "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+
+  echo "dotnet was not on PATH. Install the SDK or add ~/.dotnet to PATH." >&2
+  echo "Under sudo, this machine usually has ${user_home}/.dotnet/dotnet." >&2
+  exit 1
+}
+
+DOTNET_BIN="$(resolve_dotnet)"
+DOTNET_ROOT="$(cd "$(dirname "${DOTNET_BIN}")" && pwd)"
+export DOTNET_ROOT
+export PATH="${DOTNET_ROOT}:${PATH}"
+
+# sudo changes HOME to /var/root, which breaks whisper.cpp path probes and Metal caches.
+if [[ -n "${SUDO_USER:-}" ]]; then
+  REAL_HOME="$(eval echo "~${SUDO_USER}")"
+  if [[ -d "${REAL_HOME}" ]]; then
+    export HOME="${REAL_HOME}"
+  fi
+fi
 
 # Remove stale root-owned build artifact directories that were created by a
 # previous sudo build. They contain old auto-generated .cs files which cause
@@ -85,8 +137,9 @@ echo "Starting OpenJibo .NET cloud"
 echo " - project: ${API_PROJECT}"
 echo " - urls: ${ASPNETCORE_URLS}"
 echo " - environment: ${DOTNET_ENVIRONMENT}"
+echo " - dotnet: ${DOTNET_BIN}"
 echo " - websocket captures: ${CAPTURE_DIRECTORY}"
 echo " - http captures: ${PROTOCOL_CAPTURE_DIRECTORY}"
 
 cd "${REPO_ROOT}"
-exec dotnet run --project "${API_PROJECT}" --no-launch-profile
+exec "${DOTNET_BIN}" run --project "${API_PROJECT}" --no-launch-profile

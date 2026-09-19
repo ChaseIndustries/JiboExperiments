@@ -429,7 +429,8 @@ OpenJibo/tts/.venv/
 OpenJibo/tts/*.wav
 OpenJibo/tts/*.mp3
 OpenJibo/tts/*.mp4
-OpenJibo/tts/compare/
+OpenJibo/tts/compare/*
+!OpenJibo/tts/compare/ref-melissa.wav
 tmp/
 _tmp/
 _jibo_test_*/

@@ -28,7 +28,19 @@ Optional for real audio experiments:
 
 ## Run The .NET Cloud
 
-From the repo root:
+Physical Jibo on this LAN (the command you will actually forget):
+
+```bash
+make clone
+make cloud
+make reconnect
+```
+
+`make cloud` is sudo on port `443` with the Node cert and `.env`. `make clone` is
+the Melissa sidecar on `8091`. Full reconnect steps live in
+[local-jibo-device-runbook.md](local-jibo-device-runbook.md#reconnect).
+
+Local loopback only, no robot:
 
 ```powershell
 .\scripts\cloud\Start-OpenJiboDotNet.ps1

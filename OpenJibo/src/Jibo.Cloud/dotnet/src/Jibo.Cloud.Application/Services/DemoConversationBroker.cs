@@ -2,7 +2,9 @@ using Jibo.Runtime.Abstractions;
 
 namespace Jibo.Cloud.Application.Services;
 
-public sealed class DemoConversationBroker(JiboInteractionService interactionService) : IConversationBroker
+public sealed class DemoConversationBroker(
+    JiboInteractionService interactionService,
+    CloudChatTtsCoordinator? ttsCoordinator = null) : IConversationBroker
 {
     private readonly TimeSpan _followUpTimeout = TimeSpan.FromSeconds(6);
 
@@ -64,6 +66,9 @@ public sealed class DemoConversationBroker(JiboInteractionService interactionSer
                 SkillName = string.IsNullOrWhiteSpace(decision.SkillName) ? "chitchat-skill" : decision.SkillName,
                 Payload = decision.SkillPayload ?? new Dictionary<string, object?>()
             });
+
+        if (ttsCoordinator is not null)
+            await ttsCoordinator.ApplyAsync(plan, cancellationToken);
 
         return plan;
     }

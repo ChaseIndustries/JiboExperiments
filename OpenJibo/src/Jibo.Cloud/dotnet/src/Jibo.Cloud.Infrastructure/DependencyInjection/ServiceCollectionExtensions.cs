@@ -18,6 +18,7 @@ using Jibo.Cloud.Infrastructure.Wikipedia;
 using Jibo.Runtime.Abstractions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Npgsql;
 
 // ReSharper disable UnusedMethodReturnValue.Global
@@ -37,6 +38,27 @@ public static class ServiceCollectionExtensions
             services.Configure<TurnTelemetryOptions>(configuration.GetSection("OpenJibo:TurnTelemetry"));
             configuration.GetSection("OpenJibo:Stt").Bind(sttOptions);
         }
+
+        var ttsOptions = new TtsOptions();
+        configuration?.GetSection("OpenJibo:Tts").Bind(ttsOptions);
+        if (string.IsNullOrWhiteSpace(ttsOptions.ElevenLabsApiKey))
+            ttsOptions.ElevenLabsApiKey = Environment.GetEnvironmentVariable("OPENJIBO_ELEVENLABS_API_KEY")
+                                          ?? Environment.GetEnvironmentVariable("ELEVENLABS_API_KEY");
+        if (string.IsNullOrWhiteSpace(ttsOptions.ElevenLabsVoiceId))
+            ttsOptions.ElevenLabsVoiceId = Environment.GetEnvironmentVariable("OPENJIBO_ELEVENLABS_VOICE_ID");
+        if (string.IsNullOrWhiteSpace(ttsOptions.PublicAudioBaseUrl))
+            ttsOptions.PublicAudioBaseUrl = "https://api.jibo.com/openjibo/tts";
+        if (string.IsNullOrWhiteSpace(ttsOptions.CaptureDirectory))
+            ttsOptions.CaptureDirectory = "captures/tts";
+        ttsOptions.CaptureDirectory = CapturePathResolver.Resolve(
+            ttsOptions.CaptureDirectory,
+            Directory.GetCurrentDirectory(),
+            AppContext.BaseDirectory);
+        if (string.IsNullOrWhiteSpace(ttsOptions.LocalCloneUrl))
+            ttsOptions.LocalCloneUrl = Environment.GetEnvironmentVariable("OPENJIBO_TTS_LOCAL_CLONE_URL")
+                                       ?? "http://127.0.0.1:8091";
+        if (string.IsNullOrWhiteSpace(ttsOptions.RobotIp))
+            ttsOptions.RobotIp = Environment.GetEnvironmentVariable("JIBO_IP");
 
         BufferedAudioSttPathResolver.ValidateResolvedDependencies(sttOptions);
 
@@ -290,6 +312,34 @@ public static class ServiceCollectionExtensions
             provider.GetRequiredService<WhisperServerBufferedAudioSttStrategy>());
         services.AddSingleton<ISttStrategy, LocalWhisperCppBufferedAudioSttStrategy>();
         services.AddSingleton<ISttStrategySelector, DefaultSttStrategySelector>();
+        services.AddSingleton(ttsOptions);
+        services.AddSingleton<ITtsClipCache, InMemoryTtsClipCache>();
+        services.AddHttpClient<LocalCloneTtsStrategy>(client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(60);
+        });
+        services.AddSingleton<ITtsStrategy>(provider =>
+            provider.GetRequiredService<LocalCloneTtsStrategy>());
+        services.AddHttpClient("elevenlabs");
+        services.AddSingleton<ITtsStrategy>(provider =>
+            new ElevenLabsTtsStrategy(
+                provider.GetRequiredService<TtsOptions>(),
+                provider.GetRequiredService<IHttpClientFactory>().CreateClient("elevenlabs"),
+                provider.GetRequiredService<ILogger<ElevenLabsTtsStrategy>>()));
+        services.AddSingleton<ITtsStrategy, OnRobotGriffinTtsStrategy>();
+        services.AddSingleton<ITtsStrategySelector, DefaultTtsStrategySelector>();
+        services.AddSingleton<IRobotKitchenAudioPlayer>(provider =>
+        {
+            var bound = provider.GetRequiredService<TtsOptions>();
+            if (!bound.EnableKitchenPlay || string.IsNullOrWhiteSpace(bound.RobotIp))
+                return NullRobotKitchenAudioPlayer.Instance;
+
+            return new SshAplayKitchenAudioPlayer(
+                bound,
+                provider.GetRequiredService<IExternalProcessRunner>(),
+                provider.GetRequiredService<ILogger<SshAplayKitchenAudioPlayer>>());
+        });
+        services.AddSingleton<CloudChatTtsCoordinator>();
         services.AddSingleton<IWebSocketTelemetrySink, FileWebSocketTelemetrySink>();
         services.AddSingleton<ITransportMetrics, TransportMetrics>();
         services.AddSingleton<IProtocolTelemetrySink, FileProtocolTelemetrySink>();

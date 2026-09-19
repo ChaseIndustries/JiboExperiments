@@ -156,7 +156,36 @@ OpenJibo__Stt__AzureSpeechSubscriptionKey=<your-key>
 
 Rebuild after changing `OPENJIBO_ENABLE_LOCAL_WHISPER` since it controls which Docker build stage runs.
 
-## 6. Verify the stack
+## 6. Optional Jibo clone
+
+Griffin on the robot is still the shipping voice for stock `@be/*` skills. Cloud chat can opt into the local Melissa clone.
+
+On a Mac with a LAN Jibo, prefer `make clone` then `make cloud`. See
+[local-jibo-device-runbook.md](local-jibo-device-runbook.md#reconnect).
+
+1. Start the clone sidecar and keep it running:
+
+```bash
+./scripts/cloud/start-jibo-clone-tts.sh
+```
+
+2. Point the cloud at it, then restart the cloud:
+
+```dotenv
+OpenJibo__Tts__EnableLocalClone=true
+OpenJibo__Tts__LocalCloneUrl=http://127.0.0.1:8091
+OpenJibo__Tts__PlaybackMode=experimental-audio
+```
+
+`experimental-audio` plays the clone for `chitchat-skill` only through `<audio src>`. Native `@be/*` skills stay on Griffin. Lip sync is unproven.
+
+Kitchen one-liners still work without the cloud:
+
+```bash
+./scripts/cloud/say-jibo-clone.sh --jibo-ip 192.168.4.24 "Hi! I'm Jibo!"
+```
+
+## 7. Verify the stack
 
 ```powershell
 .\scripts\cloud\Invoke-CloudSmoke.ps1 -BaseUrl http://localhost:8080 -TargetMode open-jibo-self-hosted
@@ -172,7 +201,7 @@ Or just hit the health check directly:
 Invoke-RestMethod http://localhost:8080/health
 ```
 
-## 7. Point a physical Jibo at the stack
+## 8. Point a physical Jibo at the stack
 
 See [docs/single-robot-http-self-hosting.md](single-robot-http-self-hosting.md) for the robot-side override JSON, the tokenless single-robot compatibility flag, and common `WebSocket Exception: Not authorized` / DNS troubleshooting. See [docs/device-bootstrap.md](device-bootstrap.md) for the device bootstrap steps themselves.
 

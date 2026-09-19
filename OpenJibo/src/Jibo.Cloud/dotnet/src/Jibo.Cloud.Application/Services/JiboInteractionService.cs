@@ -78,11 +78,15 @@ public sealed partial class JiboInteractionService(
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     private static readonly Regex WeatherLocationPattern = new(
-        @"\b(?:in|for|at)\s+(?<location>[a-z][a-z\s'\-]+)$",
+        @"\b(?:in|for|at)\s+",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    private static readonly Regex WeatherTopicWordPattern = new(
+        @"\b(?:weather|forecast|temperature|humidity|leather)\b",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     private static readonly Regex WeatherLocationSuffixPattern = new(
-        @"\b(?:today|tonight|tomorrow|day after tomorrow|outside|right now|please|thanks|this weekend|next weekend|the weekend|weekend|this week|next week|on monday|on tuesday|on wednesday|on thursday|on friday|on saturday|on sunday|this monday|this tuesday|this wednesday|this thursday|this friday|this saturday|this sunday|next monday|next tuesday|next wednesday|next thursday|next friday|next saturday|next sunday|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+        @"\b(?:day after tomorrow|right now|look like|the weekend|this weekend|next weekend|this week|next week|on monday|on tuesday|on wednesday|on thursday|on friday|on saturday|on sunday|this monday|this tuesday|this wednesday|this thursday|this friday|this saturday|this sunday|next monday|next tuesday|next wednesday|next thursday|next friday|next saturday|next sunday|today|tonight|tomorrow|outside|please|thanks|like|noon|midnight|morning|afternoon|evening|night|weekend|week|next|this|last|coming|upcoming|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     private static readonly Regex WeatherConditionForecastPattern = new(
@@ -328,7 +332,70 @@ public sealed partial class JiboInteractionService(
         "this neighborhood",
         "this neighbourhood",
         "our neighborhood",
-        "our neighbourhood"
+        "our neighbourhood",
+        "the",
+        "this",
+        "current",
+        "today",
+        "todays",
+        "tonight",
+        "tomorrow",
+        "some",
+        "my",
+        "our",
+        "local",
+        "outdoor",
+        "outside",
+        "weekly",
+        "daily",
+        "noon",
+        "midnight",
+        "morning",
+        "afternoon",
+        "evening",
+        "night",
+        "next",
+        "last",
+        "coming",
+        "upcoming",
+        "week",
+        "weekend",
+        "weather",
+        "forecast",
+        "temperature",
+        "humidity",
+        "leather",
+        "report",
+        "the weather",
+        "the forecast",
+        "the temperature",
+        "the humidity",
+        "the leather"
+    };
+
+    private static readonly HashSet<string> WeatherLocationLeadFillerWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "what",
+        "what's",
+        "whats",
+        "how",
+        "how's",
+        "hows",
+        "check",
+        "show",
+        "tell",
+        "look",
+        "up",
+        "is",
+        "are",
+        "was",
+        "s",
+        "a",
+        "an",
+        "get",
+        "give",
+        "launch",
+        "like"
     };
 
     private static readonly HashSet<string> SpokenAbbreviationTokens = new(StringComparer.Ordinal)

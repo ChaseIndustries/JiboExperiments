@@ -6,8 +6,17 @@ The active OpenJibo work lives in [OpenJibo/README.md](OpenJibo/README.md), and 
 
 Repo hygiene: keep generated scratch output, temp captures, and local workspace state out of Git. The `.codex/` tree is ignored by default, and only intentionally shared configuration should be promoted to tracked files.
 
+Start the live Mac cloud (from this repo root or `OpenJibo/`):
+
+```bash
+make clone
+make cloud
+make reconnect
+```
+
 Start here:
 
+- [Reconnect Jibo to this cloud](OpenJibo/docs/local-jibo-device-runbook.md#reconnect)
 - [OpenJibo overview](OpenJibo/README.md)
 - [Roadmap](OpenJibo/docs/roadmap.md)
 - [Current cloud truth](OpenJibo/docs/development-plan.md)

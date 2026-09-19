@@ -18,7 +18,8 @@ public sealed class WebSocketTurnFinalizationService(
     ICloudStateStore? cloudStateStore = null,
     IMediaContentStore? mediaContentStore = null,
     RobotIdentitySuggestionStore? identitySuggestionStore = null,
-    ITransportMetrics? transportMetrics = null
+    ITransportMetrics? transportMetrics = null,
+    CloudChatTtsCoordinator? ttsCoordinator = null
 )
 {
     private readonly ITransportMetrics _metrics = transportMetrics ?? NullTransportMetrics.Instance;
@@ -265,6 +266,30 @@ public sealed class WebSocketTurnFinalizationService(
         ITurnTelemetrySink sink)
         : this(conversationBroker, sttStrategySelector, sink, NullLogger<WebSocketTurnFinalizationService>.Instance)
     {
+    }
+
+    private async Task<WebSocketReply[]> BuildHeardYouFallbackRepliesAsync(
+        CloudSession session,
+        WebSocketTurnState turnState,
+        CancellationToken cancellationToken)
+    {
+        string? playEsml = null;
+        if (ttsCoordinator is not null)
+        {
+            var plan = CloudChatTtsCoordinator.CreateHeardYouPlan();
+            await ttsCoordinator.ApplyAsync(plan, cancellationToken);
+            var skill = plan.Actions.OfType<InvokeNativeSkillAction>().FirstOrDefault();
+            if (skill?.Payload is { } payload && payload.TryGetValue("esml", out var esmlValue))
+                playEsml = esmlValue as string;
+        }
+
+        return ResponsePlanToSocketMessagesMapper
+            .MapFallback(
+                turnState.TransId ?? session.LastTransId ?? string.Empty,
+                turnState.ListenRules,
+                playEsml)
+            .Select(map => new WebSocketReply { Text = map.Text, DelayMs = map.DelayMs })
+            .ToArray();
     }
 
     public static void ObserveIncomingMessage(CloudSession session, string? text)
@@ -1493,11 +1518,10 @@ public sealed class WebSocketTurnFinalizationService(
                                 ["bufferedAudioChunks"] = turnState.BufferedAudioChunkCount,
                                 ["lastSttError"] = turnState.LastSttError
                             }), cancellationToken);
-                        var fallbackReplies = ResponsePlanToSocketMessagesMapper
-                            .MapFallback(turnState.TransId ?? session.LastTransId ?? string.Empty,
-                                turnState.ListenRules)
-                            .Select(map => new WebSocketReply { Text = map.Text, DelayMs = map.DelayMs })
-                            .ToArray();
+                        var fallbackReplies = await BuildHeardYouFallbackRepliesAsync(
+                            session,
+                            turnState,
+                            cancellationToken);
                         ResetBufferedAudio(session);
                         ClearListenTracking(turnState);
                         return fallbackReplies;
@@ -1526,11 +1550,10 @@ public sealed class WebSocketTurnFinalizationService(
                         session.LastTranscript = string.Empty;
                         session.LastIntent = "heyJibo";
                         session.LastListenType = "fallback";
-                        var fallbackReplies = ResponsePlanToSocketMessagesMapper
-                            .MapFallback(turnState.TransId ?? session.LastTransId ?? string.Empty,
-                                turnState.ListenRules)
-                            .Select(map => new WebSocketReply { Text = map.Text, DelayMs = map.DelayMs })
-                            .ToArray();
+                        var fallbackReplies = await BuildHeardYouFallbackRepliesAsync(
+                            session,
+                            turnState,
+                            cancellationToken);
                         ResetBufferedAudio(session);
                         ClearListenTracking(turnState);
                         return fallbackReplies;

@@ -13,6 +13,7 @@ internal sealed class SqliteSnapshotStore(string connectionString, string snapsh
 
     public TSnapshot? Load<TSnapshot>() where TSnapshot : class
     {
+        EnsureDatabaseDirectory();
         using var connection = new SqliteConnection(connectionString);
         connection.Open();
         EnsureTable(connection);
@@ -36,6 +37,7 @@ internal sealed class SqliteSnapshotStore(string connectionString, string snapsh
 
     public void Save<TSnapshot>(TSnapshot snapshot) where TSnapshot : class
     {
+        EnsureDatabaseDirectory();
         using var connection = new SqliteConnection(connectionString);
         connection.Open();
         EnsureTable(connection);
@@ -54,6 +56,17 @@ internal sealed class SqliteSnapshotStore(string connectionString, string snapsh
         command.Parameters.AddWithValue("@json", json);
         command.Parameters.AddWithValue("@updated", DateTimeOffset.UtcNow.ToString("O"));
         command.ExecuteNonQuery();
+    }
+
+    private void EnsureDatabaseDirectory()
+    {
+        var dataSource = new SqliteConnectionStringBuilder(connectionString).DataSource;
+        if (string.IsNullOrWhiteSpace(dataSource) || dataSource == ":memory:")
+            return;
+
+        var directory = Path.GetDirectoryName(Path.GetFullPath(dataSource));
+        if (!string.IsNullOrWhiteSpace(directory))
+            Directory.CreateDirectory(directory);
     }
 
     private static void EnsureTable(SqliteConnection connection)

@@ -6,6 +6,56 @@ Jibo to the OpenJibo cloud during development.
 It is intentionally practical. The goal is to preserve the exact shape that
 worked on the robot we tested, including the failure modes that mattered.
 
+## Reconnect
+
+Use this when the robot used to talk to the Mac OpenJibo cloud and now it does not.
+Do not redo the full conversion unless the bootstrap files are gone.
+
+From `OpenJibo/` (or the repo root, which forwards here):
+
+```bash
+make clone
+```
+
+In a second terminal:
+
+```bash
+make cloud
+```
+
+`make cloud` loads `.env`, binds HTTPS on `443` with the Node cert, and needs sudo.
+`make clone` must stay on your user account. MLX will not run under root.
+
+Check the Mac:
+
+```bash
+make health
+curl -k https://localhost/health
+```
+
+On Jibo, these names must resolve to the Mac LAN IP (not an old DHCP address):
+
+- `api.jibo.com`
+- `api-socket.jibo.com`
+- `open-jibo-socket.openjibo.com`
+- `neohub.openjibo.com`
+
+Leave `/var/jibo/credentials.json` `region` as `api`. Never set it to `openjibo-local`.
+That label makes STS chase `openjibo-local.jibo.com`.
+
+If the Mac IP changed, edit `OPENJIBO_MAC_IP` in `/opt/jibo/openjibo-bootstrap.sh`,
+then run that script again on the robot. See [Updating the Mac IP Without a Reboot](#updating-the-mac-ip-without-a-reboot).
+
+From Jibo:
+
+```sh
+curl -k https://api.jibo.com/health
+```
+
+Wake the robot. Say hey Jibo, how are you?
+
+Print the same checklist later with `make reconnect`.
+
 ## Current Working Shape
 
 The working device path is:
@@ -59,7 +109,15 @@ changing the credentials region to a new region label.
 
 ## Mac Server
 
-The recommended server for current OpenJibo testing is the .NET cloud. From the
+The recommended server for current OpenJibo testing is the .NET cloud.
+
+```bash
+make clone
+make cloud
+```
+
+`make cloud` is the sudo `443` launcher. It sources `.env` and runs
+`scripts/cloud/start-dotnet-with-node-cert.sh`. Manual equivalent from the
 repo root:
 
 ```bash
@@ -727,8 +785,22 @@ If a bad backup already exists, remove it.
 ## Updating the Mac IP Without a Reboot
 
 When the Mac gets a new DHCP address, the hosts bind mount on the robot still
-points to the old IP. Fix without rebooting Jibo by updating the bootstrap
-default and re-running the bootstrap.
+points to the old IP. Fix without rebooting Jibo:
+
+```sh
+# on the Mac, current LAN address
+ipconfig getifaddr en0
+
+# on Jibo as root
+jibo-mount --rw
+sed -i 's/^MAC_IP=.*/MAC_IP="${OPENJIBO_MAC_IP:-NEW.MAC.IP.HERE}"/' /opt/jibo/openjibo-bootstrap.sh
+OPENJIBO_MAC_IP=NEW.MAC.IP.HERE /opt/jibo/openjibo-bootstrap.sh
+getent hosts api.jibo.com
+curl -k https://api.jibo.com/health
+```
+
+Replace `NEW.MAC.IP.HERE` with the Mac address from `ipconfig getifaddr en0`.
+If `en0` is empty, try `en1`.
 
 ## Known Bad Attempts
 

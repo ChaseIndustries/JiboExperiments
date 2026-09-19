@@ -188,6 +188,20 @@ app.MapGet("/health/replica", (HttpContext context, ReleaseSmokeAuthorizationOpt
 app.MapPortalStaticFiles();
 app.MapPortalEndpoints();
 
+app.MapGet("/openjibo/tts/{id}", (string id, ITtsClipCache cache) =>
+{
+    var key = Path.GetFileNameWithoutExtension(id);
+    if (string.IsNullOrWhiteSpace(key) ||
+        key.Contains('/', StringComparison.Ordinal) ||
+        key.Contains('\\', StringComparison.Ordinal) ||
+        !key.StartsWith("cloud-chat-", StringComparison.OrdinalIgnoreCase))
+        return Results.BadRequest();
+
+    return cache.TryGet(key, out var clip)
+        ? Results.File(clip.Audio, clip.ContentType)
+        : Results.NotFound();
+});
+
 app.MapMethods("/{**path}", ["GET", "POST", "PUT"], async (HttpContext context, JiboCloudProtocolService service,
     IProtocolTelemetrySink telemetrySink, ITransportMetrics transportMetrics,
     ReleaseSmokeAuthorizationOptions releaseSmokeAuthorization, CancellationToken cancellationToken) =>

@@ -569,8 +569,12 @@ public sealed class ResponsePlanToSocketMessagesMapper
     ];
 
     public static IReadOnlyList<SocketReplyPlan> MapFallback(string transId,
-        IReadOnlyList<string> rules)
+        IReadOnlyList<string> rules,
+        string? playEsml = null)
     {
+        var esml = string.IsNullOrWhiteSpace(playEsml)
+            ? "<speak><es cat='neutral' filter='!ssa-only, !sfx-only' endNeutral='true'>I heard you.</es></speak>"
+            : playEsml;
         return
         [
             new SocketReplyPlan(JsonSerializer.Serialize(new
@@ -609,7 +613,7 @@ public sealed class ResponsePlanToSocketMessagesMapper
                 transID = transId,
                 data = new { }
             })),
-            new SocketReplyPlan(JsonSerializer.Serialize(BuildGenericFallbackSkillPayload(transId)), 75)
+            new SocketReplyPlan(JsonSerializer.Serialize(BuildGenericFallbackSkillPayload(transId, esml)), 75)
         ];
     }
 
@@ -992,6 +996,7 @@ public sealed class ResponsePlanToSocketMessagesMapper
             : [];
         var usePersonalReportSequence = isPersonalReport && personalReportSections.Length > 1;
         var useNewsSequence = isNewsSkill && newsSections.Length > 1;
+        var muteSpoken = TryReadPayloadBool(skillPayload, "kitchen_mute_speech");
 
         if (weatherHiLoView is not null)
         {
@@ -1051,7 +1056,8 @@ public sealed class ResponsePlanToSocketMessagesMapper
                     weatherIcon,
                     promptSubCategory,
                     mimId,
-                    mimType);
+                    mimType,
+                    muteSpoken);
             }
             else if (weeklyWeatherCards.Count > 1)
             {
@@ -1060,7 +1066,8 @@ public sealed class ResponsePlanToSocketMessagesMapper
                     weeklyWeatherCards,
                     promptSubCategory,
                     mimId,
-                    mimType);
+                    mimType,
+                    muteSpoken);
             }
         }
         else if (usePersonalReportSequence)
@@ -1073,7 +1080,8 @@ public sealed class ResponsePlanToSocketMessagesMapper
                 "cloudy",
                 promptSubCategory,
                 mimId,
-                mimType);
+                mimType,
+                muteSpoken);
         }
         else if (useNewsSequence)
         {
@@ -1085,7 +1093,8 @@ public sealed class ResponsePlanToSocketMessagesMapper
                 "cloudy",
                 promptSubCategory,
                 mimId,
-                mimType);
+                mimType,
+                muteSpoken);
         }
 
         var jcp = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
@@ -1179,7 +1188,7 @@ public sealed class ResponsePlanToSocketMessagesMapper
             : [];
     }
 
-    private static object BuildGenericFallbackSkillPayload(string transId)
+    private static object BuildGenericFallbackSkillPayload(string transId, string esml)
     {
         return new
         {
@@ -1204,8 +1213,7 @@ public sealed class ResponsePlanToSocketMessagesMapper
                             {
                                 play = new
                                 {
-                                    esml =
-                                        "<speak><es cat='neutral' filter='!ssa-only, !sfx-only' endNeutral='true'>I heard you.</es></speak>",
+                                    esml,
                                     meta = new
                                     {
                                         prompt_id = "RUNTIME_PROMPT",
@@ -1444,7 +1452,8 @@ public sealed class ResponsePlanToSocketMessagesMapper
         string weatherIcon,
         string promptSubCategory,
         string mimId,
-        string mimType)
+        string mimType,
+        bool muteSpoken = false)
     {
         var children = new List<object>(sections.Count);
         for (var index = 0; index < sections.Count; index += 1)
@@ -1475,6 +1484,8 @@ public sealed class ResponsePlanToSocketMessagesMapper
             var esml = !string.IsNullOrWhiteSpace(animCat) && !string.IsNullOrWhiteSpace(animMeta)
                 ? $"<speak><anim cat='{EscapeXml(animCat)}' meta='{EscapeXml(animMeta)}' nonBlocking='true' /><break size='{animBreak}'/><es cat='neutral' filter='!ssa-only, !sfx-only' endNeutral='true'>{EscapeXml(text)}</es></speak>"
                 : $"<speak><es cat='neutral' filter='!ssa-only, !sfx-only' endNeutral='true'>{EscapeXml(text)}</es></speak>";
+            if (muteSpoken)
+                esml = EsmlAudioSpeechBuilder.MuteSpoken(esml);
 
             var config = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
             {
@@ -1647,7 +1658,8 @@ public sealed class ResponsePlanToSocketMessagesMapper
         IReadOnlyList<WeatherHiLoSequenceCard> cards,
         string promptSubCategory,
         string mimId,
-        string mimType)
+        string mimType,
+        bool muteSpoken = false)
     {
         var children = new List<object>(cards.Count);
         for (var index = 0; index < cards.Count; index += 1)
@@ -1663,8 +1675,11 @@ public sealed class ResponsePlanToSocketMessagesMapper
             var icon = string.IsNullOrWhiteSpace(card.Icon)
                 ? "cloudy"
                 : card.Icon!;
+            var spokenInner = EscapeXml(spokenLine);
             var esml =
-                $"<speak><anim cat='weather' meta='{icon}' nonBlocking='true' /><break size='0.2'/><es cat='neutral' filter='!ssa-only, !sfx-only' endNeutral='true'>{EscapeXml(spokenLine)}</es></speak>";
+                $"<speak><anim cat='weather' meta='{icon}' nonBlocking='true' /><break size='0.2'/><es cat='neutral' filter='!ssa-only, !sfx-only' endNeutral='true'>{spokenInner}</es></speak>";
+            if (muteSpoken)
+                esml = EsmlAudioSpeechBuilder.MuteSpoken(esml);
             var resolvedGuiContext = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
             {
                 ["type"] = "Javascript",
